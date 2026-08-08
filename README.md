@@ -69,14 +69,6 @@ The workflow also regenerates each template's `README.md` from
 `devcontainer-template.json` + `NOTES.md` and opens a PR with the result. Hand-editing
 a generated `README.md` gets overwritten; edit `NOTES.md`.
 
-### First release checklist
-
-The published package starts out private and inherits no permissions from the repo:
-
-1. Run the release workflow once.
-2. Go to the org/user **Packages** tab → `devcontainers/claude-sandbox` → **Package settings**.
-3. Set the visibility to **Public** so people can install without authenticating.
-
 ## Licence
 
 MIT — see [LICENSE](LICENSE). Portions are derived from Anthropic's Claude Code
