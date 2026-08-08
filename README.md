@@ -10,20 +10,34 @@ Dev Container Templates published to `ghcr.io/pixelated-au/devcontainers`.
 
 ## Using a template
 
-In VS Code, run **Dev Containers: Add Dev Container Configuration Files...**, choose
-**Show All Definitions...**, and search for the template by name. You may need to add
-this collection first via **Dev Containers: Configure Template Collections**.
-
-Or with the [Dev Containers CLI](https://github.com/devcontainers/cli):
+With the [Dev Containers CLI](https://github.com/devcontainers/cli), from your
+project root:
 
 ```bash
+npm install -g @devcontainers/cli    # once
+
 devcontainer templates apply \
   --workspace-folder . \
-  --template-id ghcr.io/pixelated-au/devcontainers/claude-sandbox:latest
+  --template-id ghcr.io/pixelated-au/devcontainers/claude-sandbox:latest \
+  --template-args '{"timezone":"Australia/Melbourne"}'
 ```
+
+Then open the folder in VS Code and run **Dev Containers: Reopen in Container**.
+
+This collection does not appear in VS Code's **Add Dev Container Configuration
+Files...** picker. That list is populated from the community collection index, not
+from the registry — publishing to GHCR is not enough to be listed. Getting in means
+a PR against [`collection-index.yml`](https://github.com/devcontainers/devcontainers.github.io/blob/gh-pages/_data/collection-index.yml).
 
 Applying a template copies its files into your project — it does not create a
 dependency on this repo. Once applied, the config is yours to edit.
+
+The template ships `LICENSE.md` and `THIRD-PARTY-LICENSES.md` at the project root,
+which will overwrite a `LICENSE.md` you already have. Skip them with:
+
+```bash
+--omit-paths '["LICENSE.md"]'
+```
 
 ## Repository layout
 
@@ -68,14 +82,6 @@ to `:1` pick up minor releases automatically.
 The workflow also regenerates each template's `README.md` from
 `devcontainer-template.json` + `NOTES.md` and opens a PR with the result. Hand-editing
 a generated `README.md` gets overwritten; edit `NOTES.md`.
-
-### First release checklist
-
-The published package starts out private and inherits no permissions from the repo:
-
-1. Run the release workflow once.
-2. Go to the org/user **Packages** tab → `devcontainers/claude-sandbox` → **Package settings**.
-3. Set the visibility to **Public** so people can install without authenticating.
 
 ## Licence
 
