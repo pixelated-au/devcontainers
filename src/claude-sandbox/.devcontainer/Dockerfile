@@ -1,5 +1,8 @@
 FROM node:24
 
+LABEL "au.pixelated.container.function"="To run Claude Code inside of a sandbox" \
+  "au.pixelated.container.keywords"="claude code,sandbox,node,bun"
+
 ARG TZ
 ENV TZ="$TZ"
 
