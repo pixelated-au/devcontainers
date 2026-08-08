@@ -2,7 +2,7 @@
 
 A container for running Claude Code with its network access fenced in. It is not
 meant to be a general-purpose dev container — there is no language toolchain here
-beyond Node, and no attempt to be a comfortable place to hand-write code.
+beyond Node and Bun, and no attempt to be a comfortable place to hand-write code.
 
 The container starts with `iptables -P OUTPUT DROP` and an `ipset` allow-list built
 from `.devcontainer/firewall/firewall-whitelist-domains.json`. Anything not on that

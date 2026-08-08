@@ -1,6 +1,6 @@
 {
     "id": "claude-sandbox",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "name": "Claude Sandbox",
     "description": "Runs Claude Code inside a Docker sandbox with a default-deny outbound firewall. This isn't a general-purpose development container; it exists to give Claude a contained environment where it can only reach an explicit allow-list of hosts.",
     "documentationURL": "https://github.com/pixelated-au/devcontainers/tree/main/src/claude-sandbox",

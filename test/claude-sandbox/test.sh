@@ -14,6 +14,8 @@ source test-utils.sh
 check "node"          node --version
 check "npm"           npm --version
 check "claude"        claude --version
+check "bun"           bun --version
+check "bunx"          bunx --version
 check "git"           git --version
 check "gh"            gh --version
 check "delta"         delta --version
@@ -25,6 +27,13 @@ check "dig"           bash -c 'command -v dig'
 
 # `latest` is resolved at build time, so just assert it is a real semver.
 check "claude-is-versioned" bash -c 'claude --version | grep -qE "[0-9]+\.[0-9]+\.[0-9]+"'
+check "bun-is-versioned"    bash -c 'bun --version | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+"'
+
+# The runtime, not just the binary — bun ships its own JS engine.
+check "bun-runs-js" bash -c '[ "$(bun -e "console.log(40 + 2)")" = "42" ]'
+
+# Owned by `node`, so `bun upgrade` doesn't need root.
+check "bun-owned-by-node" bash -c '[ -O /home/node/.bun/bin/bun ]'
 
 # --- Environment -----------------------------------------------------------
 check "runs-as-node"        bash -c '[ "$(whoami)" = "node" ]'
@@ -67,5 +76,24 @@ check "allows-npm" bash -c '
 # the connection was allowed through.
 check "allows-anthropic-api" bash -c '
     curl -sS -o /dev/null --connect-timeout 10 --max-time 20 https://api.anthropic.com/'
+
+# bun resolves the npm registry itself rather than going through npm, so prove its
+# own fetch path clears the firewall.
+check "bun-installs-from-npm" bash -c '
+    tmp=$(mktemp -d) && trap "rm -rf $tmp" EXIT &&
+    cd "$tmp" && echo "{}" > package.json &&
+    bun add is-number@7.0.0 &&
+    [ -f node_modules/is-number/package.json ]'
+
+check "allows-bun-com" bash -c '
+    curl -sS -o /dev/null --connect-timeout 10 --max-time 20 https://bun.com/install'
+
+# The reason bun.com is on the allow-list. Version tags come from GitHub and the
+# installer from bun.com, so this fails if either is fenced off. On an
+# already-current container this upgrades nothing; the container is disposable
+# either way.
+check "bun-can-upgrade" bash -c '
+    bun upgrade 2>&1 | tee /dev/stderr \
+        | grep -qE "already on the latest version|Upgraded|Installed"'
 
 reportResults
