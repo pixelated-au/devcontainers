@@ -1,0 +1,35 @@
+name: "CI - Test Templates"
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      templates: ${{ steps.filter.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            claude-sandbox: ./**/claude-sandbox/**
+
+  test:
+    needs: [detect-changes]
+    # Nothing to do when a PR only touches docs or workflows.
+    if: ${{ needs.detect-changes.outputs.templates != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        templates: ${{ fromJSON(needs.detect-changes.outputs.templates) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Smoke test for '${{ matrix.templates }}'
+        id: smoke_test
+        uses: ./.github/actions/smoke-test
+        with:
+          template: "${{ matrix.templates }}"

@@ -1,0 +1,37 @@
+{
+    "id": "claude-sandbox",
+    "version": "1.0.0",
+    "name": "Claude Sandbox",
+    "description": "Runs Claude Code inside a Docker sandbox with a default-deny outbound firewall. This isn't a general-purpose development container; it exists to give Claude a contained environment where it can only reach an explicit allow-list of hosts.",
+    "documentationURL": "https://github.com/pixelated-au/devcontainers/tree/main/src/claude-sandbox",
+    "licenseURL": "https://github.com/pixelated-au/devcontainers/blob/main/LICENSE",
+    "publisher": "Pixelated",
+    "keywords": [
+        "claude",
+        "claude-code",
+        "sandbox",
+        "firewall",
+        "node"
+    ],
+    "options": {
+        "timezone": {
+            "type": "string",
+            "description": "IANA timezone for the container. The host's $TZ takes precedence when it is set.",
+            "proposals": [
+                "Australia/Melbourne",
+                "Australia/Sydney",
+                "Australia/Brisbane",
+                "Australia/Perth",
+                "Pacific/Auckland",
+                "UTC",
+                "Europe/London",
+                "America/New_York",
+                "America/Los_Angeles"
+            ],
+            "default": "Australia/Melbourne"
+        }
+    },
+    "platforms": [
+        "Any"
+    ]
+}

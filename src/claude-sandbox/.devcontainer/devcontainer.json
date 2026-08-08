@@ -1,0 +1,77 @@
+// Claude Sandbox — see ./README.md in the repo root of this template for details.
+// The outbound firewall is default-deny; edit ./firewall/firewall-whitelist-domains.json
+// to allow more hosts, then run `./.devcontainer/firewall-ctl.sh reload` from the host.
+{
+  "name": "Claude Sandbox",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "TZ": "${localEnv:TZ:${templateOption:timezone}}",
+      "CLAUDE_CODE_VERSION": "latest",
+      "GIT_DELTA_VERSION": "0.19.2",
+      "ZSH_IN_DOCKER_VERSION": "1.2.1"
+    }
+  },
+
+  // NET_ADMIN/NET_RAW are what let configure-firewall.sh install the iptables
+  // rules and ipset. Without them the container starts but has no sandboxing.
+  "runArgs": ["--cap-add=NET_ADMIN", "--cap-add=NET_RAW"],
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["anthropic.claude-code"],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.profiles.linux": {
+          "bash": {
+            "path": "bash",
+            "icon": "terminal-bash"
+          },
+          "zsh": {
+            "path": "zsh"
+          }
+        }
+      }
+    }
+  },
+
+  "remoteUser": "node",
+
+  "mounts": [
+    // Shell history survives rebuilds, per workspace.
+    "source=claude-code-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
+
+    // Claude's own config (including your login) is shared by every container
+    // built from this template, so you authenticate once rather than per project.
+    "source=claude-code-devcontainer-config,target=/home/node/.claude,type=volume",
+
+    // Your host slash-commands and subagents, read-only. Set CLAUDE_HOST_CONFIG_DIR
+    // on the host to point somewhere other than ~/.claude (the value is relative to
+    // $HOME). initializeCommand below creates these so a missing dir can't fail the
+    // container start.
+    "type=bind,source=${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/commands,target=/home/node/.claude/commands,readonly",
+    "type=bind,source=${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/agents,target=/home/node/.claude/agents,readonly",
+
+    // Bind-mounted rather than baked in, so editing the JSON on the host and
+    // running `firewall-ctl.sh reload` takes effect without a rebuild.
+    "source=${localWorkspaceFolder}/.devcontainer/firewall,target=/etc/firewall,type=bind,readonly"
+  ],
+
+  "containerEnv": {
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "CLAUDE_CONFIG_DIR": "/home/node/.claude",
+    "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
+    "FIREWALL_WHITELIST_FILE": "/etc/firewall/firewall-whitelist-domains.json"
+  },
+
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "workspaceFolder": "/workspace",
+
+  "initializeCommand": "mkdir -p \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/commands\" \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/agents\"",
+  "postCreateCommand": "git config --global --add safe.directory /workspace",
+
+  // iptables rules live in the container's network namespace, not the image, so
+  // they have to be rebuilt on every start rather than once at create time.
+  "postStartCommand": "sudo /usr/local/bin/configure-firewall.sh --init",
+  "waitFor": "postStartCommand"
+}
