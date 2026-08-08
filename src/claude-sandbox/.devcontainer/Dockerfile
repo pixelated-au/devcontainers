@@ -100,6 +100,12 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
 # Install Claude
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
+# Install Bun. Installed per-user rather than globally, so it lands in
+# /home/node/.bun and `bun upgrade` works without root.
+ENV BUN_INSTALL=/home/node/.bun
+ENV PATH=/home/node/.bun/bin:$PATH
+RUN curl -fsSL https://bun.com/install | bash
+
 # Copy and set up firewall script.
 #
 # The whitelist is baked in as a fallback; devcontainer.json normally bind-mounts

@@ -2,6 +2,7 @@
   "$comment": "Domains and CIDRs allowed through the outbound firewall. Edit, then run `.devcontainer/firewall-ctl.sh reload` from the host.",
   "domains": [
     "registry.npmjs.org",
+    "bun.com",
     "api.anthropic.com",
     "console.anthropic.com",
     "claude.ai",
