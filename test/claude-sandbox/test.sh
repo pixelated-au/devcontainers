@@ -39,7 +39,25 @@ check "bun-owned-by-node" bash -c '[ -O /home/node/.bun/bin/bun ]'
 check "runs-as-node"        bash -c '[ "$(whoami)" = "node" ]'
 check "claude-config-dir"   bash -c '[ "$CLAUDE_CONFIG_DIR" = "/home/node/.claude" ]'
 check "devcontainer-flag"   bash -c '[ "$DEVCONTAINER" = "true" ]'
-check "workspace-is-cwd"    bash -c '[ -d /workspace ]'
+# This script runs from <workspaceFolder>/test-project, so the workspace root is
+# one level up.
+export WORKSPACE_ROOT="${PWD%/test-project}"
+
+# Claude keys session history by the path it runs from, and the config volume is
+# shared across every container from this template. A bare /workspace would pool
+# every project's history into one bucket, so the mount must be namespaced.
+check "workspace-is-namespaced" bash -c '
+    case "$PWD" in /workspaces/?*) : ;; *) echo "cwd is $PWD"; exit 1 ;; esac'
+check "workspace-not-shared-path" bash -c "[ \"\$WORKSPACE_ROOT\" != /workspace ]"
+
+# Proves the bind mount actually landed on the namespaced path, rather than the
+# directory merely existing.
+check "workspace-mount-landed" bash -c '[ -f ../devcontainer-template.json ]'
+
+# postCreateCommand resolves ${containerWorkspaceFolder}; if that substitution
+# broke, git would refuse to operate on the bind-mounted repo.
+check "git-safe-directory" bash -c "
+    git config --global --get-all safe.directory | grep -qxF \"\$WORKSPACE_ROOT\""
 check "host-commands-mount" bash -c '[ -d /home/node/.claude/commands ]'
 check "host-agents-mount"   bash -c '[ -d /home/node/.claude/agents ]'
 
