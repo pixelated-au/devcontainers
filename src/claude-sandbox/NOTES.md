@@ -49,6 +49,41 @@ Three shapes of entry are supported in the JSON:
 - `github_meta` — pulls current GitHub ranges from `api.github.com/meta`. Set
   `enabled: false` if you don't want the container talking to GitHub at all.
 
+## Keeping projects apart
+
+Claude's own config — including your login — lives in one named volume shared by
+every container built from this template. That is deliberate for credentials, but
+it also means Claude's session history is shared, and Claude keys that history by
+the path it is run from. If every project mounted at the same `/workspace`, they
+would all write into the same bucket and `claude --continue` in one project would
+offer you another project's sessions.
+
+So the project is mounted at `/workspaces/<name>`, where `<name>` comes from the
+`workspaceFolder` template option. Its default, `${localWorkspaceFolderBasename}`,
+resolves to the name of your project folder on the host, which is unique often
+enough to be a sane default — but two checkouts both called `api` would still
+collide. Set it explicitly when that matters:
+
+```bash
+devcontainer templates apply \
+  --workspace-folder . \
+  --template-id ghcr.io/pixelated-au/devcontainers/claude-sandbox:latest \
+  --template-args '{"workspaceFolder":"acme-api"}'
+```
+
+Note that the CLI does not prompt: options you leave out of `--template-args` take
+their default silently. The prompt only appears in editors that surface template
+options in their UI.
+
+Two consequences worth knowing:
+
+- The value is baked into `devcontainer.json` when the template is applied, so
+  changing it later means editing `workspaceMount` and `workspaceFolder` by hand
+  (or re-applying the template) and rebuilding.
+- Sessions recorded before this change live under `~/.claude/projects/-workspace`
+  in the shared volume. Moving to a namespaced path leaves them there — they are
+  not lost, but `--continue` will no longer find them.
+
 ## Host configuration passed through
 
 Your host slash-commands and subagents are mounted read-only:
@@ -79,8 +114,8 @@ docker volume rm claude-code-devcontainer-config
 Be clear-eyed about the boundary. The firewall constrains *where* the container can
 send bytes; it does nothing about what happens to the code inside it.
 
-- Your workspace is bind-mounted read-write at `/workspace`. Anything Claude does
-  there lands on your real filesystem.
+- Your workspace is bind-mounted read-write at `/workspaces/<name>`. Anything Claude
+  does there lands on your real filesystem.
 - Allow-listing a host allows everything on that host. `github_meta` permits any
   GitHub repo, not just yours — including pushes.
 - DNS is unrestricted (UDP/53 is allowed before the default-deny rule), so hostname

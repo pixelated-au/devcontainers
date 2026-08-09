@@ -64,11 +64,15 @@
     "FIREWALL_WHITELIST_FILE": "/etc/firewall/firewall-whitelist-domains.json"
   },
 
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
-  "workspaceFolder": "/workspace",
+  // Mounted under a per-project folder rather than a bare /workspace. Claude keys
+  // its session history by the path it is run from, and the config volume below is
+  // shared by every container from this template — an identical path in each one
+  // would pool every project's history together.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${templateOption:workspaceFolder},type=bind,consistency=delegated",
+  "workspaceFolder": "/workspaces/${templateOption:workspaceFolder}",
 
   "initializeCommand": "mkdir -p \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/commands\" \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/agents\"",
-  "postCreateCommand": "git config --global --add safe.directory /workspace",
+  "postCreateCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
 
   // iptables rules live in the container's network namespace, not the image, so
   // they have to be rebuilt on every start rather than once at create time.
