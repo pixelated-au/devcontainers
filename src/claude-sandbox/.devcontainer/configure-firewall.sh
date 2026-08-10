@@ -92,6 +92,27 @@ require_root() {
 # half-way.
 cleanup_tmp() { ipset destroy "$IPSET_TMP" 2>/dev/null || true; }
 
+# Leave the container with no way out except loopback.
+#
+# `--init` flushes the existing rules long before it is in a position to install
+# the default-deny policy, so every failure in between — an unreachable GitHub
+# meta endpoint, an unresolvable domain under --strict, a malformed whitelist —
+# used to leave the container with no firewall at all. An agent running in that
+# window has unrestricted egress and no way to tell. Sealing is the safe end
+# state: wrong, but wrong in the direction that cannot leak.
+seal_firewall() {
+    log "Sealing container: default-deny policy, loopback only"
+    iptables -F 2>/dev/null || true
+    iptables -X 2>/dev/null || true
+    iptables -P INPUT DROP 2>/dev/null || true
+    iptables -P FORWARD DROP 2>/dev/null || true
+    iptables -P OUTPUT DROP 2>/dev/null || true
+    iptables -A INPUT -i lo -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true
+    ipset destroy "$IPSET_NAME" 2>/dev/null || true
+    ipset destroy "$IPSET_TMP" 2>/dev/null || true
+}
+
 validate_whitelist() {
     [ -f "$WHITELIST_FILE" ] || die "whitelist file not found: $WHITELIST_FILE"
     jq -e . "$WHITELIST_FILE" >/dev/null 2>&1 \
@@ -257,10 +278,7 @@ do_reload() {
     log "Reload complete"
 }
 
-do_init() {
-    require_root
-    validate_whitelist
-
+install_firewall() {
     # 1. Extract Docker DNS (pre-defined by Docker to be `127.0.0.11`)
     # info BEFORE any flushing
     DOCKER_DNS_RULES=$(iptables-save -t nat | grep "127\.0\.0\.11" || true)
@@ -274,6 +292,16 @@ do_init() {
     iptables -t mangle -X
     ipset destroy "$IPSET_NAME" 2>/dev/null || true
     ipset destroy "$IPSET_TMP" 2>/dev/null || true
+
+    # Building the allow-list needs egress of its own — DNS lookups and, when
+    # github_meta is on, a call to api.github.com. `iptables -F` leaves the
+    # policies alone, so a previous seal (or a previous successful init) would
+    # still be denying that traffic and the rebuild could never succeed. Reopen
+    # for the build window only; every exit path from here lands in
+    # seal_firewall or in the DROP policies installed at the end.
+    iptables -P INPUT ACCEPT
+    iptables -P FORWARD ACCEPT
+    iptables -P OUTPUT ACCEPT
 
     # 2. Selectively restore ONLY internal Docker DNS resolution
     if [ -n "$DOCKER_DNS_RULES" ]; then
@@ -342,6 +370,19 @@ do_init() {
         else
             log "Firewall verification passed - able to reach https://api.github.com as expected"
         fi
+    fi
+}
+
+do_init() {
+    require_root
+    validate_whitelist
+
+    # The subshell is what makes this work: `die` inside install_firewall exits
+    # the subshell rather than the script, so control comes back here and we get
+    # to choose the end state rather than stopping wherever the failure landed.
+    if ! ( install_firewall ); then
+        seal_firewall
+        die "init failed - the container is sealed and has no egress. Fix the cause above and re-run --init."
     fi
 }
 
