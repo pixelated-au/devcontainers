@@ -34,6 +34,7 @@ IPSET_TMP="${IPSET_NAME}-tmp"
 MODE="init"
 STRICT_DNS="${FIREWALL_STRICT_DNS:-0}"
 FLUSH_CONNTRACK=0
+WHITELIST_OVERRIDDEN=0
 
 usage() {
     cat >&2 <<EOF
@@ -69,7 +70,7 @@ while [ $# -gt 0 ]; do
         --reload)           MODE="reload" ;;
         --list)             MODE="list" ;;
         --strict)           STRICT_DNS=1 ;;
-        --file)             WHITELIST_FILE="${2:?--file requires a path}"; shift ;;
+        --file)             WHITELIST_FILE="${2:?--file requires a path}"; WHITELIST_OVERRIDDEN=1; shift ;;
         --flush-conntrack)  FLUSH_CONNTRACK=1 ;;
         -h|--help)          usage; exit 0 ;;
         *) echo "ERROR: unknown argument: $1" >&2; usage; exit 2 ;;
@@ -82,6 +83,27 @@ done
 # ---------------------------------------------------------------------------
 log() { echo "[firewall] $*"; }
 die() { echo "[firewall] ERROR: $*" >&2; exit 1; }
+
+# True when we were invoked through sudo by an unprivileged user — i.e. by `node`
+# via the narrow sudoers rule, rather than by root proper.
+via_sudo_from_user() { [ -n "${SUDO_UID:-}" ] && [ "${SUDO_UID}" != "0" ]; }
+
+# Choosing the allow-list is the one thing that widens egress rather than
+# narrowing it, and `node` is allowed to run this script as root. Honouring
+# --file there would hand a compromised agent the whole sandbox: write a
+# whitelist naming any host, re-init, and the firewall authorises it. Refuse
+# before anything is touched, so a rejected call leaves the running firewall
+# exactly as it was.
+#
+# Root proper is unaffected: firewall-ctl.sh drives this with `docker exec -u 0`,
+# which sets no SUDO_UID, and only falls back to sudo when the docker CLI is
+# unreachable — a path that never passes --file.
+if via_sudo_from_user; then
+    [ "$WHITELIST_OVERRIDDEN" -eq 0 ] \
+        || die "--file is not permitted via sudo: it would allow choosing an arbitrary allow-list"
+    [ -z "${FIREWALL_WHITELIST_FILE:-}" ] \
+        || die "FIREWALL_WHITELIST_FILE is not honoured via sudo"
+fi
 
 require_root() {
     [ "$(id -u)" -eq 0 ] || die "must be run as root (try: sudo $0 ...)"
