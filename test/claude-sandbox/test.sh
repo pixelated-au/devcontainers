@@ -114,43 +114,37 @@ check "bun-can-upgrade" bash -c '
     bun upgrade 2>&1 | tee /dev/stderr \
         | grep -qE "already on the latest version|Upgraded|Installed"'
 
-# --- Fail-closed behaviour -------------------------------------------------
-# These run last: they deliberately break the firewall, then rebuild it.
-#
-# `--init` flushes the live rules before it can install the default-deny policy.
-# A failure inside that window must leave the container sealed, never open. The
-# broken whitelist below is valid JSON that dies in add_github_ranges, which is
-# exactly where the CI rate-limit failure lands.
-BROKEN_WHITELIST=/tmp/broken-whitelist.json
-cat > "$BROKEN_WHITELIST" <<'JSON'
-{"domains":[],"cidrs":[],"github_meta":{"enabled":true,"sections":["no-such-section"]}}
+# --- Privilege boundary: choosing the allow-list ---------------------------
+# `node` may run configure-firewall.sh as root. If it could also choose which
+# whitelist that run reads, it could authorise any host it liked and the sandbox
+# would mean nothing. These are the checks that say it cannot.
+cat > /tmp/attacker-whitelist.json <<'JSON'
+{"domains":["example.com"],"cidrs":[],"github_meta":{"enabled":false}}
 JSON
 
-check "broken-init-fails" bash -c '
-    ! sudo -n /usr/local/bin/configure-firewall.sh --init --file /tmp/broken-whitelist.json \
-        >/dev/null 2>&1'
+# Asserting the message, not just the exit code: the sudoers rule lists no
+# arguments, which in sudoers means *any* arguments are permitted, so it is the
+# script's own guard that has to refuse this. A non-zero exit alone could just as
+# easily mean the command broke for an unrelated reason.
+check "sudo-rejects-file-flag" bash -c '
+    sudo -n /usr/local/bin/configure-firewall.sh --init --file /tmp/attacker-whitelist.json 2>&1 \
+        | grep -q "not permitted via sudo"'
 
-# The point of the whole exercise: a half-configured firewall denies egress.
-check "broken-init-seals-egress" bash -c '
-    ! curl -sS --connect-timeout 5 --max-time 10 https://api.github.com/zen >/dev/null 2>&1'
-check "broken-init-blocks-example" bash -c '
-    ! curl -sS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1'
+# This one is stopped by sudo itself, before the script runs: setting an
+# environment variable on the command line is not something the rule allows.
+check "sudo-rejects-whitelist-env" bash -c '
+    ! sudo -n FIREWALL_WHITELIST_FILE=/tmp/attacker-whitelist.json \
+        /usr/local/bin/configure-firewall.sh --init >/dev/null 2>&1'
 
-# With the allow-list gone, every interactive shell must say so — this is the only
-# signal when postStartCommand never ran at all.
-check "warns-in-bash" bash -c '
-    bash -ic true 2>&1 | grep -q "firewall is NOT active"'
-check "warns-in-zsh" bash -c '
-    zsh -ic true 2>&1 | grep -q "firewall is NOT active"'
-
-# Put the container back the way it was, then prove it really did come back.
-check "reinit-restores-firewall" bash -c '
-    sudo -n /usr/local/bin/configure-firewall.sh --init >/dev/null 2>&1'
-check "restored-allows-github" bash -c '
+# Rejection must happen before anything is touched, so a refused call cannot be
+# used to tear the firewall down either.
+check "rejected-file-leaves-firewall-up" bash -c '
     curl -sS --connect-timeout 10 --max-time 20 https://api.github.com/zen >/dev/null'
-check "restored-blocks-example" bash -c '
+check "rejected-file-did-not-open-egress" bash -c '
     ! curl -sS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1'
-check "no-warning-when-healthy" bash -c '
-    ! bash -ic true 2>&1 | grep -q "NOT active"'
+
+# The modes node legitimately needs must still work.
+check "sudo-allows-list" bash -c '
+    sudo -n /usr/local/bin/configure-firewall.sh --list >/dev/null'
 
 reportResults

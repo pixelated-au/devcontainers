@@ -148,4 +148,8 @@ send bytes; it does nothing about what happens to the code inside it.
 - Outbound SSH on port 22 is allowed to any host.
 - `node` may run `configure-firewall.sh` as root via a narrow sudoers rule and
   nothing else. That script is the sandbox's trusted boundary — treat edits to it
-  the way you'd treat edits to a sudoers file.
+  the way you'd treat edits to a sudoers file. It refuses `--file` (and
+  `FIREWALL_WHITELIST_FILE`) when reached through sudo, because otherwise `node`
+  could point the firewall at a whitelist it wrote itself and authorise anything;
+  the refusal happens before any rule is touched. Real root — `docker exec -u 0`,
+  which is how `firewall-ctl.sh` normally drives it — keeps both.
