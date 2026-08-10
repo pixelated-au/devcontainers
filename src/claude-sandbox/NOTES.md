@@ -14,6 +14,19 @@ setup that `example.com` is unreachable and (when GitHub ranges are enabled) tha
 `api.github.com` is. A misconfigured whitelist fails the container start rather than
 silently leaving the sandbox wide open.
 
+`--init` fails closed. It has to flush the live rules before it is in a position to
+install the default-deny policy, so any failure in that window — an unreachable
+GitHub meta endpoint, an unresolvable domain under `--strict` — would otherwise
+leave the container with no firewall at all. Instead the container is sealed:
+default-deny on every chain, loopback only, no allow-list. Egress stays broken
+until a `--init` succeeds, which is the safe direction to be wrong in.
+
+That still leaves one gap, because it only helps if the script runs at all. If
+`postStartCommand` never fires — the stale-container trap described below is the
+usual cause — there is no firewall and nothing has failed loudly. So every
+interactive shell checks for the allow-list and prints a red warning when it is
+missing. If you see that warning, treat the container as unsandboxed.
+
 ## Requirements
 
 - Docker with `NET_ADMIN` and `NET_RAW` available to the container. Rootless Docker
@@ -79,7 +92,19 @@ Two consequences worth knowing:
 
 - The value is baked into `devcontainer.json` when the template is applied, so
   changing it later means editing `workspaceMount` and `workspaceFolder` by hand
-  (or re-applying the template) and rebuilding.
+  (or re-applying the template) — and then **recreating the container**, not just
+  restarting it:
+
+  ```bash
+  devcontainer up --workspace-folder . --remove-existing-container
+  ```
+
+  `devcontainer up` on its own reuses any container that matches the workspace,
+  and a changed mount is not enough to make it rebuild. The old container keeps
+  its old bind target, the CLI then execs with a working directory that does not
+  exist there, and you get `chdir to cwd (...) failed: no such file or directory`
+  with exit 127. In VS Code, *Dev Containers: Rebuild Container* does the same
+  thing. Nothing is wrong with your config when this happens.
 - Sessions recorded before this change live under `~/.claude/projects/-workspace`
   in the shared volume. Moving to a namespaced path leaves them there — they are
   not lost, but `--continue` will no longer find them.

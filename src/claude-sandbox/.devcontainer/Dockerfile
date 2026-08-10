@@ -123,8 +123,17 @@ RUN curl -fsSL https://bun.com/install | bash
 USER root
 COPY configure-firewall.sh /usr/local/bin/
 COPY firewall/firewall-whitelist-domains.json /etc/firewall/
+COPY firewall-warning.sh /etc/firewall-warning.sh
 RUN chmod +x /usr/local/bin/configure-firewall.sh && \
-    chmod 644 /etc/firewall/firewall-whitelist-domains.json && \
+    chmod 644 /etc/firewall/firewall-whitelist-domains.json /etc/firewall-warning.sh && \
     echo "node ALL=(root) NOPASSWD: /usr/local/bin/configure-firewall.sh" > /etc/sudoers.d/node-firewall && \
     chmod 0440 /etc/sudoers.d/node-firewall
+
+# Warn on every interactive shell when the firewall is not actually up. Both rc
+# files are needed: zsh does not read /etc/bash.bashrc, and the default shell here
+# is zsh while `devcontainer exec` and CI use bash.
+RUN mkdir -p /etc/zsh && \
+    for rc in /etc/bash.bashrc /etc/zsh/zshrc; do \
+      printf '\n%s\n' 'if [ -f /etc/firewall-warning.sh ]; then . /etc/firewall-warning.sh; fi' >> "$rc"; \
+    done
 USER node
