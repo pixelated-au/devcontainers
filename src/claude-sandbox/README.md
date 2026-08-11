@@ -36,8 +36,32 @@ until a `--init` succeeds, which is the safe direction to be wrong in.
 That still leaves one gap, because it only helps if the script runs at all. If
 `postStartCommand` never fires — the stale-container trap described below is the
 usual cause — there is no firewall and nothing has failed loudly. So every
-interactive shell checks for the allow-list and prints a red warning when it is
-missing. If you see that warning, treat the container as unsandboxed.
+interactive shell runs `configure-firewall.sh --status` and speaks up:
+
+- **red, "NOT active"** — the firewall is not enforcing and egress is unrestricted.
+  Treat the container as unsandboxed.
+- **yellow, "sealed"** — closed but not working: an `--init` failed and nothing can
+  get out. Safe, just unusable until you re-run it.
+
+`--status` checks what is actually enforced — the `OUTPUT` policy, the allow-list
+rule, a non-empty ipset, and the IPv6 policy — rather than whether the ipset merely
+exists. Those are not the same question: flush the rules and set the policy back to
+`ACCEPT` and the set is still sitting there, which reads as healthy while every
+destination on the internet is reachable. Exit codes are `0` enforcing, `3` sealed,
+`1` open, so scripts can tell the three apart.
+
+## IPv6
+
+IPv6 is denied outright, and that is deliberate rather than an omission. Every rule
+here is an `iptables` rule, which IPv6 traffic never touches, and the allow-list is
+IPv4-only by construction — GitHub's published IPv6 ranges are discarded, and
+domains are resolved via `A` records only. So there is no such thing as an allowed
+IPv6 destination, and leaving the family unfiltered would mean the entire allow-list
+could be walked around by resolving `AAAA` instead of `A` on any host where Docker
+has IPv6 enabled or the network is dual-stack.
+
+If the container has an IPv6 stack that `ip6tables` cannot be made to filter,
+`--init` fails rather than continuing.
 
 ## Requirements
 
