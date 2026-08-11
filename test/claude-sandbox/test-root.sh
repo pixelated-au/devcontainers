@@ -63,12 +63,23 @@ check "no-warning-when-healthy" bash -c '
 UNREACHABLE_META="https://127.0.0.1:1/meta"
 META_FIXTURE=/tmp/meta-fallback.json
 
-api_cidrs=$(dig +short A api.github.com | grep -E '^[0-9]+\.' | sed 's|$|/32|' \
-            | jq -R . | jq -s .)
-printf '{"web":%s,"api":%s,"git":%s}\n' "$api_cidrs" "$api_cidrs" "$api_cidrs" > "$META_FIXTURE"
-
-check "meta-fixture-is-usable" bash -c '
-    jq -e ".api | length > 0" /tmp/meta-fallback.json >/dev/null'
+# The fixture has to be GitHub's real published ranges. Post-init verification
+# genuinely curls api.github.com, and that name resolves to a pool — pinning one
+# DNS answer passes locally and then fails when the verify picks a different IP.
+#
+# Prefer the copy the harness pre-fetched (authenticated, so it is always there on
+# CI); fall back to fetching live, which is fine on a workstation where the rate
+# limit is not contended. Built before the sealing checks below, while there is
+# still egress to build it with.
+FIXTURE_SOURCE=""
+if jq -e '.web and .api and .git' /etc/firewall/github-meta-fallback.json >/dev/null 2>&1; then
+    cp /etc/firewall/github-meta-fallback.json "$META_FIXTURE"
+    FIXTURE_SOURCE="pre-fetched fallback"
+elif curl -sSf --connect-timeout 10 --max-time 30 "https://api.github.com/meta" > "$META_FIXTURE" 2>/dev/null \
+     && jq -e '.web and .api and .git' "$META_FIXTURE" >/dev/null 2>&1; then
+    FIXTURE_SOURCE="live api.github.com"
+fi
+echo "meta fixture source: ${FIXTURE_SOURCE:-none}"
 
 # No fallback available: retries, reports the attempts, and seals rather than
 # coming up without the ranges it was told to install.
@@ -86,17 +97,23 @@ check "meta-failure-still-seals" bash -c '
 # first match and SIGPIPEs the script mid-configuration. The script now ignores
 # SIGPIPE, but a test that half-kills the thing it is measuring would be lying
 # either way. The exit status is checked too — a warning alone proves nothing.
-check "meta-falls-back-when-unreachable" bash -c "
-    out=\$(FIREWALL_GITHUB_META_URL='$UNREACHABLE_META' \
-           FIREWALL_GITHUB_META_FALLBACK='$META_FIXTURE' \
-           /usr/local/bin/configure-firewall.sh --init 2>&1)
-    rc=\$?
-    [ \$rc -eq 0 ] || { echo \"\$out\" | tail -5; exit 1; }
-    echo \"\$out\" | grep -q 'may be stale'"
-check "fallback-reaches-github" bash -c '
-    curl -sS --connect-timeout 10 --max-time 20 https://api.github.com/zen >/dev/null'
-check "fallback-still-blocks-example" bash -c '
-    ! curl -sS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1'
+if [ -n "$FIXTURE_SOURCE" ]; then
+    check "meta-falls-back-when-unreachable" bash -c "
+        out=\$(FIREWALL_GITHUB_META_URL='$UNREACHABLE_META' \
+               FIREWALL_GITHUB_META_FALLBACK='$META_FIXTURE' \
+               /usr/local/bin/configure-firewall.sh --init 2>&1)
+        rc=\$?
+        [ \$rc -eq 0 ] || { echo \"\$out\" | tail -5; exit 1; }
+        echo \"\$out\" | grep -q 'may be stale'"
+    check "fallback-reaches-github" bash -c '
+        curl -sS --connect-timeout 10 --max-time 20 https://api.github.com/zen >/dev/null'
+    check "fallback-still-blocks-example" bash -c '
+        ! curl -sS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1'
+else
+    # Loud on purpose: silently skipping these would read as "the fallback works".
+    echoStderr "⚠️  SKIPPED fallback checks: no usable GitHub meta fixture."
+    echoStderr "   Needs /etc/firewall/github-meta-fallback.json or a reachable api.github.com."
+fi
 
 # Regression: a reader that closes the pipe early used to SIGPIPE the script
 # mid-configuration, after the flush and before the default-deny policy — leaving
