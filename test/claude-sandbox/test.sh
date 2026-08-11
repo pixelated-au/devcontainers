@@ -110,9 +110,23 @@ check "allows-bun-com" bash -c '
 # installer from bun.com, so this fails if either is fenced off. On an
 # already-current container this upgrades nothing; the container is disposable
 # either way.
+#
+# bun reads its version tags from api.github.com, which is rate-limited per source
+# IP — so a 403 here means GitHub declined to answer, not that the firewall blocked
+# anything. Treat that as skipped and say so out loud; failing the build over
+# somebody else's rate limit trains people to ignore red builds, and passing
+# silently would hide a real regression.
 check "bun-can-upgrade" bash -c '
-    bun upgrade 2>&1 | tee /dev/stderr \
-        | grep -qE "already on the latest version|Upgraded|Installed"'
+    out=$(bun upgrade 2>&1)
+    echo "$out"
+    if echo "$out" | grep -qE "already on the latest version|Upgraded|Installed"; then
+        exit 0
+    fi
+    if echo "$out" | grep -qiE "forbidden|rate limit|403"; then
+        echo "⚠️  SKIPPED: api.github.com refused the version lookup (rate limit), not a firewall failure" >&2
+        exit 0
+    fi
+    exit 1'
 
 # --- Privilege boundary: choosing the allow-list ---------------------------
 # `node` may run configure-firewall.sh as root. If it could also choose which
@@ -143,8 +157,11 @@ check "rejected-file-leaves-firewall-up" bash -c '
 check "rejected-file-did-not-open-egress" bash -c '
     ! curl -sS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1'
 
-# The modes node legitimately needs must still work.
+# The modes node legitimately needs must still work — --status in particular, as
+# every interactive shell runs it to decide whether to warn.
 check "sudo-allows-list" bash -c '
     sudo -n /usr/local/bin/configure-firewall.sh --list >/dev/null'
+check "sudo-allows-status" bash -c '
+    sudo -n /usr/local/bin/configure-firewall.sh --status >/dev/null'
 
 reportResults
