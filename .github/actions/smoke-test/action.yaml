@@ -14,6 +14,10 @@ runs:
     - name: Build template
       id: build_template
       shell: bash
+      # Only used to pre-fetch GitHub's published IP ranges at a higher rate
+      # limit; it is not passed into the container.
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
       run: ${{ github.action_path }}/build.sh ${{ inputs.template }}
 
     - name: Test template

@@ -56,6 +56,28 @@ if [ -d "${TEST_DIR}" ] ; then
     cp -Rp test/test-utils/* ${DEST_DIR}
 fi
 
+# Pre-fetch GitHub's IP ranges from the runner, authenticated.
+#
+# The container fetches these itself at start-up, but unauthenticated and from a
+# shared runner IP, where the 60/hour limit is routinely already spent by someone
+# else. That made roughly half of CI runs fail on a rate limit that has nothing to
+# do with the change under test. The token here lifts the limit to 1000/hour, and
+# the container still tries the live endpoint first — this is only its fallback.
+FIREWALL_DIR="${SRC_DIR}/.devcontainer/firewall"
+if [ -n "${GITHUB_TOKEN:-}" ] && [ -d "${FIREWALL_DIR}" ] ; then
+    echo "(*) Pre-fetching GitHub meta ranges as a fallback"
+    if curl -sSf --connect-timeout 10 --max-time 30 \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/meta > "${FIREWALL_DIR}/github-meta-fallback.json" ; then
+        echo "(*) Fallback written"
+    else
+        # Not fatal: the container will still try the live endpoint.
+        echo "(!) Could not pre-fetch GitHub meta ranges; continuing without a fallback"
+        rm -f "${FIREWALL_DIR}/github-meta-fallback.json"
+    fi
+fi
+
 export DOCKER_BUILDKIT=1
 echo "(*) Installing @devcontainer/cli"
 npm install -g @devcontainers/cli

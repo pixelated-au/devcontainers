@@ -4,3 +4,6 @@ node_modules/
 # Per-machine Claude Code permission grants. Must never be committed: anything
 # under src/<template>/ is copied verbatim into every user's project.
 .claude/settings.local.json
+
+# Pre-fetched GitHub ranges, generated per-run by the smoke test
+src/*/.devcontainer/firewall/github-meta-fallback.json
