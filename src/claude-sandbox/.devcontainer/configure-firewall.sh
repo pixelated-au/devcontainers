@@ -31,6 +31,15 @@ fi
 IPSET_NAME="${FIREWALL_IPSET_NAME:-allowed-domains}"
 IPSET_TMP="${IPSET_NAME}-tmp"
 
+# api.github.com allows 60 unauthenticated requests an hour per source IP, and CI
+# runners share their egress address with the rest of the platform, so this call
+# fails intermittently through no fault of the container. Drop a pre-fetched copy
+# of the response at $META_FALLBACK — authenticated, from somewhere with its own
+# rate limit — and it is used when the live fetch cannot be had. Both are
+# allow-list sources, so both are refused over sudo along with --file.
+META_URL="${FIREWALL_GITHUB_META_URL:-https://api.github.com/meta}"
+META_FALLBACK="${FIREWALL_GITHUB_META_FALLBACK:-/etc/firewall/github-meta-fallback.json}"
+
 MODE="init"
 STRICT_DNS="${FIREWALL_STRICT_DNS:-0}"
 FLUSH_CONNTRACK=0
@@ -82,6 +91,10 @@ done
 # Helpers
 # ---------------------------------------------------------------------------
 log() { echo "[firewall] $*"; }
+# For anything logged from a function whose stdout is captured by a command
+# substitution — on stdout it would be swallowed into the caller's variable
+# rather than shown.
+warn() { echo "[firewall] $*" >&2; }
 die() { echo "[firewall] ERROR: $*" >&2; exit 1; }
 
 # True when we were invoked through sudo by an unprivileged user — i.e. by `node`
@@ -103,6 +116,10 @@ if via_sudo_from_user; then
         || die "--file is not permitted via sudo: it would allow choosing an arbitrary allow-list"
     [ -z "${FIREWALL_WHITELIST_FILE:-}" ] \
         || die "FIREWALL_WHITELIST_FILE is not honoured via sudo"
+    [ -z "${FIREWALL_GITHUB_META_URL:-}" ] \
+        || die "FIREWALL_GITHUB_META_URL is not honoured via sudo"
+    [ -z "${FIREWALL_GITHUB_META_FALLBACK:-}" ] \
+        || die "FIREWALL_GITHUB_META_FALLBACK is not honoured via sudo"
 fi
 
 require_root() {
@@ -123,7 +140,9 @@ cleanup_tmp() { ipset destroy "$IPSET_TMP" 2>/dev/null || true; }
 # window has unrestricted egress and no way to tell. Sealing is the safe end
 # state: wrong, but wrong in the direction that cannot leak.
 seal_firewall() {
-    log "Sealing container: default-deny policy, loopback only"
+    # Tolerated deliberately: if stdout has gone away (see the SIGPIPE trap in
+    # do_init) a failed log write must not stop us closing the firewall.
+    log "Sealing container: default-deny policy, loopback only" || true
     iptables -F 2>/dev/null || true
     iptables -X 2>/dev/null || true
     iptables -P INPUT DROP 2>/dev/null || true
@@ -168,13 +187,53 @@ is_hostname()  { [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]]; }
 # ---------------------------------------------------------------------------
 # Building the allow-list
 # ---------------------------------------------------------------------------
+# Transient failures and a spent rate limit look identical from here, so retry a
+# few times and then say which one it looked like — "missing section: web" on its
+# own reads like a broken whitelist and sends you looking in the wrong place.
+fetch_github_meta() {
+    local attempt=1 max=3 delay=2 response status body
+
+    while :; do
+        status="none"
+        if response=$(curl -sS --connect-timeout 10 --max-time 30 \
+                           -w $'\n%{http_code}' "$META_URL" 2>/dev/null); then
+            status="${response##*$'\n'}"
+            body="${response%$'\n'*}"
+            if [ "$status" = "200" ] && [ -n "$body" ]; then
+                printf '%s' "$body"
+                return 0
+            fi
+        fi
+
+        warn "WARNING: GitHub meta fetch failed (attempt ${attempt}/${max}, HTTP ${status})"
+        case "$status" in
+            403|429) warn "WARNING: that status is almost always the api.github.com rate limit, which is per source IP" ;;
+        esac
+
+        [ "$attempt" -lt "$max" ] || return 1
+        attempt=$((attempt + 1))
+        sleep "$delay"
+        delay=$((delay * 3))
+    done
+}
+
+load_meta_fallback() {
+    [ -f "$META_FALLBACK" ] || return 1
+    jq -e . "$META_FALLBACK" >/dev/null 2>&1 \
+        || die "GitHub meta fallback is not valid JSON: $META_FALLBACK"
+    cat "$META_FALLBACK"
+}
+
 add_github_ranges() {
     local set_name="$1"
     local gh_ranges sections=() section cidrs all_cidrs="" cidr
 
-    log "Fetching GitHub IP ranges..."
-    gh_ranges=$(curl -s --connect-timeout 10 https://api.github.com/meta) \
-        || die "failed to fetch GitHub IP ranges"
+    log "Fetching GitHub IP ranges from $META_URL..."
+    if ! gh_ranges=$(fetch_github_meta); then
+        gh_ranges=$(load_meta_fallback) \
+            || die "failed to fetch GitHub IP ranges, and no usable fallback at $META_FALLBACK"
+        log "WARNING: using pre-fetched GitHub ranges from $META_FALLBACK; they may be stale"
+    fi
     [ -n "$gh_ranges" ] || die "failed to fetch GitHub IP ranges"
 
     mapfile -t sections < <(read_github_sections)
@@ -398,6 +457,15 @@ install_firewall() {
 do_init() {
     require_root
     validate_whitelist
+
+    # Ignore SIGPIPE for the duration.
+    #
+    # Anything that reads only part of our output — `| grep -q`, `| head` — closes
+    # the pipe early and the default SIGPIPE would kill us mid-configuration,
+    # after the rules are flushed but before the default-deny policy is in. That
+    # is the fail-open case this function exists to prevent, and it should not be
+    # reachable by something as ordinary as piping the log somewhere.
+    trap '' PIPE
 
     # The subshell is what makes this work: `die` inside install_firewall exits
     # the subshell rather than the script, so control comes back here and we get

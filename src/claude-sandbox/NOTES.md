@@ -62,6 +62,28 @@ Three shapes of entry are supported in the JSON:
 - `github_meta` — pulls current GitHub ranges from `api.github.com/meta`. Set
   `enabled: false` if you don't want the container talking to GitHub at all.
 
+That last one is rate-limited to 60 requests an hour **per source IP**, unauthenticated,
+and a container that cannot fetch it seals itself rather than come up without the
+ranges. On a workstation that limit is unlikely to bother you; on shared egress —
+CI runners especially — it is routinely already spent by somebody else, and roughly
+half of our own CI runs used to fail on it.
+
+The fetch retries three times with backoff, and reports a 403/429 as the rate limit
+it almost certainly is rather than as a broken whitelist. If it still cannot be had,
+a pre-fetched copy of the response at `firewall/github-meta-fallback.json` is used
+instead, with a warning that the ranges may be stale. Populate it from somewhere with
+a higher limit — an authenticated request is 1000/hour:
+
+```bash
+curl -sSf -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/meta \
+  > .devcontainer/firewall/github-meta-fallback.json
+```
+
+The live endpoint is always tried first, so the file only matters when the fetch
+fails. No token is passed into the container: the fetch runs on the host, and a
+token inside a sandbox whose allow-list already includes GitHub would be worth more
+to an attacker than anything else in there.
+
 ## Keeping projects apart
 
 Claude's own config — including your login — lives in one named volume shared by
