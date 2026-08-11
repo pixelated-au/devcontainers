@@ -33,11 +33,16 @@ check "broken-init-blocks-example" bash -c '
     ! curl -sS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1'
 
 # --- The warning is the only signal when init never ran --------------------
-# Checked as `node`, since that is who gets the shell.
-check "warns-in-bash" bash -c '
-    su node -c "bash -ic true" 2>&1 | grep -q "firewall is NOT active"'
-check "warns-in-zsh" bash -c '
-    su node -c "zsh -ic true" 2>&1 | grep -q "firewall is NOT active"'
+# Checked as `node`, since that is who gets the shell. A sealed container is
+# closed rather than open, so it gets the milder message — telling someone their
+# egress is "unrestricted" when nothing can get out would train them to ignore it.
+check "sealed-status-code" bash -c '
+    /usr/local/bin/configure-firewall.sh --status >/dev/null 2>&1; [ $? -eq 3 ]'
+check "warns-sealed-in-bash" bash -c '
+    su node -c "bash -ic true" 2>&1 | grep -q "firewall is sealed"'
+check "warns-sealed-in-zsh" bash -c '
+    su node -c "zsh -ic true" 2>&1 | grep -q "firewall is sealed"'
+
 
 # --- Sealing has to stay recoverable ---------------------------------------
 # Rebuilding needs egress of its own (DNS, and api.github.com for the meta
@@ -49,8 +54,46 @@ check "restored-allows-github" bash -c '
     curl -sS --connect-timeout 10 --max-time 20 https://api.github.com/zen >/dev/null'
 check "restored-blocks-example" bash -c '
     ! curl -sS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1'
+
+# --- The case the ipset check used to miss ---------------------------------
+# Rules flushed and the policy back to ACCEPT, with the ipset left sitting there.
+# Egress is wide open, and anything that only asks whether the set exists calls
+# that healthy. Done from a *healthy* firewall on purpose: INPUT still carries its
+# ESTABLISHED,RELATED rule, so replies come back and the container really is open —
+# doing it from a sealed one would just be blocked at INPUT and prove nothing.
+check "flushed-rules-are-really-open" bash -c '
+    iptables -F OUTPUT && iptables -P OUTPUT ACCEPT
+    curl -sS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1'
+check "open-status-code" bash -c '
+    /usr/local/bin/configure-firewall.sh --status >/dev/null 2>&1; [ $? -eq 1 ]'
+check "warns-open-in-bash" bash -c '
+    su node -c "bash -ic true" 2>&1 | grep -q "NOT active"'
+check "reinit-after-open" bash -c '
+    /usr/local/bin/configure-firewall.sh --init >/dev/null 2>&1'
 check "no-warning-when-healthy" bash -c '
-    ! su node -c "bash -ic true" 2>&1 | grep -q "NOT active"'
+    ! su node -c "bash -ic true" 2>&1 | grep -qE "NOT active|is sealed"'
+check "healthy-status-code" bash -c '
+    /usr/local/bin/configure-firewall.sh --status >/dev/null 2>&1'
+
+# --- IPv6 -------------------------------------------------------------------
+# Every rule this script installs is an iptables rule, and the allow-list only
+# ever contains IPv4 — add_github_ranges drops GitHub's IPv6 ranges outright. So
+# an unfiltered IPv6 stack is a way around the whole thing on any host where
+# Docker has IPv6 enabled.
+check "ipv6-output-policy-drop" bash -c '
+    ip6tables -S OUTPUT | grep -qx -- "-P OUTPUT DROP"'
+check "ipv6-input-policy-drop" bash -c '
+    ip6tables -S INPUT | grep -qx -- "-P INPUT DROP"'
+check "ipv6-loopback-allowed" bash -c '
+    ip6tables -S OUTPUT | grep -q -- "-o lo -j ACCEPT"'
+
+# An open IPv6 policy has to count as not-enforcing, or the status check would
+# call a container healthy while half its address family is unfiltered.
+check "ipv6-open-reports-not-enforcing" bash -c '
+    ip6tables -P OUTPUT ACCEPT
+    /usr/local/bin/configure-firewall.sh --status >/dev/null 2>&1; rc=$?
+    ip6tables -P OUTPUT DROP
+    [ $rc -ne 0 ]'
 
 # --- GitHub meta: retry, then fall back ------------------------------------
 # api.github.com is rate-limited per source IP and CI shares its egress, so this

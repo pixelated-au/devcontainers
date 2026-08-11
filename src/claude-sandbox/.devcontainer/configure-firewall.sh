@@ -53,6 +53,8 @@ Modes:
   --init              Full setup: iptables rules + build the allow-list (default)
   --reload            Rebuild the allow-list only, leaving iptables rules untouched
   --list              Print the currently active allow-list and exit
+  --status            Report whether the firewall is enforcing.
+                      Exit 0 enforcing, 3 sealed (closed, no allow-list), 1 open.
 
 Options:
   --file <path>       Whitelist JSON to use, overriding auto-detection.
@@ -78,6 +80,7 @@ while [ $# -gt 0 ]; do
         --init)             MODE="init" ;;
         --reload)           MODE="reload" ;;
         --list)             MODE="list" ;;
+        --status)           MODE="status" ;;
         --strict)           STRICT_DNS=1 ;;
         --file)             WHITELIST_FILE="${2:?--file requires a path}"; WHITELIST_OVERRIDDEN=1; shift ;;
         --flush-conntrack)  FLUSH_CONNTRACK=1 ;;
@@ -126,6 +129,40 @@ require_root() {
     [ "$(id -u)" -eq 0 ] || die "must be run as root (try: sudo $0 ...)"
 }
 
+# The kernel has an IPv6 stack at all. Link-local only still counts: what matters
+# is whether ip6tables has anything to enforce against.
+ipv6_present() { [ -f /proc/net/if_inet6 ]; }
+
+# Deny IPv6 outright.
+#
+# The allow-list is IPv4-only by construction — add_github_ranges explicitly drops
+# GitHub's IPv6 ranges, and add_domains only ever reads A records — so there is no
+# such thing as an allowed IPv6 destination. Every rule installed here is an
+# iptables rule, which IPv6 traffic never touches. On a host where Docker has IPv6
+# enabled or the network is dual-stack, that means the entire allow-list can be
+# walked around by resolving AAAA instead of A.
+deny_ipv6() {
+    if ! command -v ip6tables >/dev/null 2>&1; then
+        ipv6_present \
+            && die "ip6tables is missing but this container has an IPv6 stack; refusing to leave IPv6 unfiltered" \
+            || { log "No ip6tables and no IPv6 stack: nothing to restrict"; return 0; }
+    fi
+
+    # Policy first, so a failure part-way through still leaves IPv6 closed.
+    if ! ip6tables -P OUTPUT DROP 2>/dev/null; then
+        ipv6_present \
+            && die "failed to set an IPv6 default-deny policy while an IPv6 stack is present" \
+            || { log "IPv6 stack unavailable: skipping ip6tables"; return 0; }
+    fi
+    ip6tables -P INPUT DROP
+    ip6tables -P FORWARD DROP
+    ip6tables -F
+    ip6tables -X 2>/dev/null || true
+    ip6tables -A INPUT -i lo -j ACCEPT
+    ip6tables -A OUTPUT -o lo -j ACCEPT
+    log "IPv6: default-deny installed (the allow-list is IPv4-only)"
+}
+
 # Any failure between creating the temp set and swapping it in leaves the live
 # set completely untouched, so a bad config can never open or close the firewall
 # half-way.
@@ -150,6 +187,12 @@ seal_firewall() {
     iptables -P OUTPUT DROP 2>/dev/null || true
     iptables -A INPUT -i lo -j ACCEPT 2>/dev/null || true
     iptables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true
+    if command -v ip6tables >/dev/null 2>&1; then
+        ip6tables -P INPUT DROP 2>/dev/null || true
+        ip6tables -P FORWARD DROP 2>/dev/null || true
+        ip6tables -P OUTPUT DROP 2>/dev/null || true
+        ip6tables -F 2>/dev/null || true
+    fi
     ipset destroy "$IPSET_NAME" 2>/dev/null || true
     ipset destroy "$IPSET_TMP" 2>/dev/null || true
 }
@@ -339,6 +382,55 @@ do_list() {
     ipset list "$IPSET_NAME" 2>/dev/null || die "ipset '$IPSET_NAME' does not exist; run --init first"
 }
 
+# Is the firewall actually enforcing?
+#
+# The presence of the ipset says nothing on its own: rules can be flushed and the
+# policy left at ACCEPT with the set still sitting there, which looks healthy to
+# anything that only asks whether the set exists — while every destination is
+# reachable. Check what is enforced instead.
+#
+# Exit codes are the interface here, because the answer is three-valued:
+#   0  enforcing
+#   3  sealed: closed, but with no working allow-list
+#   1  not enforcing: egress is open
+do_status() {
+    require_root
+    local entries policy_drop=1 rule_present=1 set_ok=1 ipv6_ok=1
+
+    iptables -S OUTPUT 2>/dev/null | grep -qx -- "-P OUTPUT DROP" || policy_drop=0
+    iptables -C OUTPUT -m set --match-set "$IPSET_NAME" dst -j ACCEPT 2>/dev/null || rule_present=0
+
+    if ipset list "$IPSET_NAME" -t >/dev/null 2>&1; then
+        entries=$(ipset list "$IPSET_NAME" -t | awk '/Number of entries/ {print $NF}')
+        [ "${entries:-0}" -gt 0 ] || set_ok=0
+    else
+        set_ok=0
+    fi
+
+    # An unfiltered IPv6 stack is an open door regardless of how good the IPv4
+    # rules are, so it counts as not enforcing rather than as a warning.
+    if ipv6_present && command -v ip6tables >/dev/null 2>&1; then
+        ip6tables -S OUTPUT 2>/dev/null | grep -qx -- "-P OUTPUT DROP" || ipv6_ok=0
+    fi
+
+    if [ "$policy_drop" -eq 1 ] && [ "$rule_present" -eq 1 ] \
+       && [ "$set_ok" -eq 1 ] && [ "$ipv6_ok" -eq 1 ]; then
+        log "Firewall is enforcing (${entries} allow-list entries)"
+        return 0
+    fi
+
+    [ "$policy_drop" -eq 1 ] || warn "IPv4 OUTPUT policy is not DROP"
+    [ "$rule_present" -eq 1 ] || warn "allow-list rule is not installed"
+    [ "$set_ok" -eq 1 ] || warn "allow-list is missing or empty"
+    [ "$ipv6_ok" -eq 1 ] || warn "IPv6 OUTPUT policy is not DROP"
+
+    # Sealed counts as closed: unusable, but nothing can get out.
+    if [ "$policy_drop" -eq 1 ] && [ "$ipv6_ok" -eq 1 ]; then
+        return 3
+    fi
+    return 1
+}
+
 do_reload() {
     require_root
     iptables -C OUTPUT -m set --match-set "$IPSET_NAME" dst -j ACCEPT 2>/dev/null \
@@ -406,6 +498,10 @@ install_firewall() {
     # Allow localhost
     iptables -A INPUT -i lo -j ACCEPT
     iptables -A OUTPUT -o lo -j ACCEPT
+
+    # Nothing below this line applies to IPv6, so close it before we open
+    # anything at all.
+    deny_ipv6
 
     # Build the allow-list from the JSON whitelist
     build_allowed_set
@@ -480,4 +576,5 @@ case "$MODE" in
     init)   do_init ;;
     reload) do_reload ;;
     list)   do_list ;;
+    status) do_status ;;
 esac
