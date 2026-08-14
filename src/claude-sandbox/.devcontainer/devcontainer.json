@@ -64,6 +64,19 @@
     "FIREWALL_WHITELIST_FILE": "/etc/firewall/firewall-whitelist-domains.json"
   },
 
+  // TERM only advertises 256 colours, so 24-bit support is detected through
+  // COLORTERM — and nothing forwards it into a container by default, which is why
+  // output that is true-colour on the host comes out quantised inside.
+  //
+  // Passed through rather than hardcoded to "truecolor": on a terminal that cannot
+  // do 24-bit, claiming otherwise turns readable output into approximated mush.
+  // Empty when the host does not set it, which every sane consumer treats as absent.
+  // In remoteEnv rather than containerEnv so it follows the client you connect
+  // with, instead of being frozen at whatever created the container.
+  "remoteEnv": {
+    "COLORTERM": "${localEnv:COLORTERM}"
+  },
+
   // Mounted under a per-project folder rather than a bare /workspace. Claude keys
   // its session history by the path it is run from, and the config volume below is
   // shared by every container from this template — an identical path in each one

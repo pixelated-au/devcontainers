@@ -10,7 +10,10 @@ ID_LABEL="test-container=${TEMPLATE_ID}"
 # Invoked as `bash ./test.sh` rather than `./test.sh`: the upstream starter chmods
 # the script with sudo first, which this image refuses on purpose — its sudoers rule
 # is scoped to configure-firewall.sh alone.
-devcontainer exec --workspace-folder "${SRC_DIR}" --id-label "${ID_LABEL}" \
+# COLORTERM stands in for a true-colour capable client. Runners do not set it, and
+# nothing forwards it into a container unless the template asks for it — so without
+# this the passthrough could never be exercised here.
+COLORTERM=truecolor devcontainer exec --workspace-folder "${SRC_DIR}" --id-label "${ID_LABEL}" \
     /bin/bash -c 'set -e && cd test-project && bash ./test.sh'
 
 # Privileged half, when the template ships one.
