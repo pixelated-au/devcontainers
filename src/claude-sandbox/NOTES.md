@@ -155,6 +155,21 @@ Two consequences worth knowing:
   in the shared volume. Moving to a namespaced path leaves them there — they are
   not lost, but `--continue` will no longer find them.
 
+## Colours
+
+24-bit colour is advertised through `COLORTERM`, not `TERM` — `TERM=xterm-256color`
+says exactly what it says — and nothing forwards `COLORTERM` into a container by
+default. Output that is true-colour on the host therefore arrives quantised to 256
+colours inside. `remoteEnv` passes the host's value through.
+
+It is passed through rather than hardcoded to `truecolor`: on a terminal that cannot
+do 24-bit, claiming it can turns readable output into approximated mush. If your
+terminal supports true colour but does not export `COLORTERM` (some do not), set it
+on the host and reconnect.
+
+Being `remoteEnv`, this is read when you connect, not when the container is built —
+editing it takes effect on the next shell, with no rebuild.
+
 ## Host configuration passed through
 
 Your host slash-commands and subagents are mounted read-only:

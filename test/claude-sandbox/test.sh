@@ -39,6 +39,10 @@ check "bun-owned-by-node" bash -c '[ -O /home/node/.bun/bin/bun ]'
 check "runs-as-node"        bash -c '[ "$(whoami)" = "node" ]'
 check "claude-config-dir"   bash -c '[ "$CLAUDE_CONFIG_DIR" = "/home/node/.claude" ]'
 check "devcontainer-flag"   bash -c '[ "$DEVCONTAINER" = "true" ]'
+# 24-bit colour is detected through COLORTERM, not TERM, and it is not forwarded
+# into a container unless remoteEnv asks for it — without which everything renders
+# quantised to 256 colours.
+check "colorterm-forwarded"  bash -c '[ "$COLORTERM" = "truecolor" ]'
 # This script runs from <workspaceFolder>/test-project, so the workspace root is
 # one level up.
 export WORKSPACE_ROOT="${PWD%/test-project}"
