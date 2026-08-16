@@ -69,8 +69,13 @@ ENV DEVCONTAINER=true
 # Only the /workspaces parent is created here: the project itself is bind-mounted
 # into a per-project subfolder named at template-apply time, so the image cannot
 # know the leaf name.
-RUN mkdir -p /workspaces /home/node/.claude && \
-  chown -R node:node /workspaces /home/node/.claude
+#
+# .config must exist and be owned by node before the named volume is mounted over
+# it. Docker creates a missing mountpoint as root:root, and the volume it seeds
+# from an absent directory is empty — so without this, ~/.config comes up
+# unwritable by the only user that ever runs anything here.
+RUN mkdir -p /workspaces /home/node/.claude /home/node/.config && \
+  chown -R node:node /workspaces /home/node/.claude /home/node/.config
 
 WORKDIR /workspaces
 

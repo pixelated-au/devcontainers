@@ -195,6 +195,30 @@ everywhere:
 docker volume rm claude-code-devcontainer-config
 ```
 
+`~/.config` is persisted the same way, in `claude-code-devcontainer-user-config`.
+That is where everything following the XDG convention writes — `gh`'s login, git
+credential caches, tool state — none of which survives a rebuild otherwise, so
+`gh auth login` would be a chore you repeat every time the image changes.
+
+It is one volume shared by every container from this template, not one per project.
+Convenient, and worth being deliberate about: a `gh` token in there is readable by
+*any* container built from this template, and the firewall already allows GitHub, so
+anything Claude does in one project can push to every repo that token can reach. If
+that is more trust than you want to extend, give the project its own copy by editing
+the mount to include `${devcontainerId}`:
+
+```jsonc
+"source=claude-code-devcontainer-user-config-${devcontainerId},target=/home/node/.config,type=volume",
+```
+
+The volume is seeded from the image the first time it is created and never again, so
+a later image version that ships new defaults under `~/.config` will not reach a
+volume you already have. Delete it to start clean:
+
+```bash
+docker volume rm claude-code-devcontainer-user-config
+```
+
 ## What this does not protect against
 
 Be clear-eyed about the boundary. The firewall constrains *where* the container can
@@ -207,6 +231,8 @@ send bytes; it does nothing about what happens to the code inside it.
 - DNS is unrestricted (UDP/53 is allowed before the default-deny rule), so hostname
   lookups themselves are an unmonitored side channel.
 - Outbound SSH on port 22 is allowed to any host.
+- The `~/.claude` and `~/.config` volumes are shared by every container from this
+  template, so a credential written in one project is available to all of them.
 - `node` may run `configure-firewall.sh` as root via a narrow sudoers rule and
   nothing else. That script is the sandbox's trusted boundary — treat edits to it
   the way you'd treat edits to a sudoers file. It refuses `--file` (and
