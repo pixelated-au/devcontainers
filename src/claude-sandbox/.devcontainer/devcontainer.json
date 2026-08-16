@@ -13,6 +13,15 @@
     }
   },
 
+  // Chrome Remote Debugging
+  "forwardPorts": [9222],
+  "portsAttributes": {
+    "9222": {
+      "label": "Chrome Remote Debugging",
+      "onAutoForward": "notify"
+    }
+  },
+
   // NET_ADMIN/NET_RAW are what let configure-firewall.sh install the iptables
   // rules and ipset. Without them the container starts but has no sandboxing.
   "runArgs": ["--cap-add=NET_ADMIN", "--cap-add=NET_RAW"],
@@ -44,6 +53,13 @@
     // Claude's own config (including your login) is shared by every container
     // built from this template, so you authenticate once rather than per project.
     "source=claude-code-devcontainer-config,target=/home/node/.claude,type=volume",
+
+    // Everything else that follows the XDG convention — gh's login, git-credential
+    // caches, tool state — lands in ~/.config, which is otherwise thrown away on
+    // rebuild. Shared across every container from this template for the same reason
+    // the volume above is: authenticate once, not once per project. See the security
+    // note in README.md before putting a token in here.
+    "source=claude-code-devcontainer-user-config,target=/home/node/.config,type=volume",
 
     // Your host slash-commands and subagents, read-only. Set CLAUDE_HOST_CONFIG_DIR
     // on the host to point somewhere other than ~/.claude (the value is relative to

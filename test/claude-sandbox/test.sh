@@ -65,6 +65,20 @@ check "git-safe-directory" bash -c "
 check "host-commands-mount" bash -c '[ -d /home/node/.claude/commands ]'
 check "host-agents-mount"   bash -c '[ -d /home/node/.claude/agents ]'
 
+# --- Persisted ~/.config ---------------------------------------------------
+# A directory that merely exists would pass a -d check and still be discarded on
+# rebuild, so assert it is actually a mount.
+check "user-config-is-mounted" bash -c 'mountpoint -q /home/node/.config'
+
+# The failure mode this guards is specific: if the image has no /home/node/.config,
+# Docker creates the mountpoint as root:root and node — the only user here — cannot
+# write to its own config dir. `gh auth login` fails with a permission error that
+# reads like a gh bug.
+check "user-config-owned-by-node" bash -c '[ -O /home/node/.config ]'
+check "user-config-writable" bash -c '
+    f=/home/node/.config/.write-probe.$$
+    touch "$f" && rm -f "$f"'
+
 # --- Firewall configuration ------------------------------------------------
 check "whitelist-mounted" bash -c '[ -f /etc/firewall/firewall-whitelist-domains.json ]'
 check "whitelist-is-json" bash -c 'jq -e . /etc/firewall/firewall-whitelist-domains.json > /dev/null'
