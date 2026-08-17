@@ -31,6 +31,17 @@ fi
 IPSET_NAME="${FIREWALL_IPSET_NAME:-allowed-domains}"
 IPSET_TMP="${IPSET_NAME}-tmp"
 
+# Every A record we allow is also pinned into /etc/hosts, inside the block these
+# markers delimit. See write_host_pins for why.
+#
+# Deliberately not overridable by an environment variable, unlike the paths above:
+# `node` can reach this script through sudo, and a settable destination for a
+# root-owned write is a way out of the sandbox rather than a convenience.
+HOSTS_FILE="/etc/hosts"
+HOSTS_BEGIN="# BEGIN firewall pins (configure-firewall.sh) - do not edit"
+HOSTS_END="# END firewall pins (configure-firewall.sh)"
+HOST_PINS=""
+
 # api.github.com allows 60 unauthenticated requests an hour per source IP, and CI
 # runners share their egress address with the rest of the platform, so this call
 # fails intermittently through no fault of the container. Drop a pre-fetched copy
@@ -168,6 +179,60 @@ deny_ipv6() {
 # half-way.
 cleanup_tmp() { ipset destroy "$IPSET_TMP" 2>/dev/null || true; }
 
+# Pin every allowed name to the exact addresses that were allow-listed for it.
+#
+# The allow-list is a snapshot of DNS taken at build time, which quietly assumes
+# that a name resolves to the same thing later. Behind a CDN it does not:
+# repo.packagist.org hands out a different single A record per query, from a pool
+# spread across unrelated networks, so `composer install` was reaching an address
+# that was never in the ipset and getting rejected — intermittently, which is the
+# worst way to get it. Widening the allow-list to cover the pool means allow-listing
+# most of a CDN provider.
+#
+# Pinning inverts the problem. Nothing in the container can dial an address that
+# was not allow-listed, because it can no longer learn one: glibc answers from
+# /etc/hosts and never asks DNS for these names. All records are pinned, not just
+# the first, so a client can still fail over between allowed addresses.
+#
+# Two consequences worth knowing:
+#   - A pinned address that goes unhealthy stays broken until the next reload.
+#     That is the same staleness the ipset already has, now visible in one more
+#     place.
+#   - Only A records are written, so AAAA for a pinned name resolves to nothing.
+#     That suits a firewall whose allow-list is IPv4-only by construction.
+#
+# Written in place with `cat`, never `mv`: Docker bind-mounts /etc/hosts, so
+# replacing the file fails with EBUSY.
+write_host_pins() {
+    local pins="$1" preserved tmp="${HOSTS_FILE}.firewall-tmp"
+
+    preserved=$(awk -v b="$HOSTS_BEGIN" -v e="$HOSTS_END" '
+        $0 == b { skip = 1 }
+        !skip   { print }
+        $0 == e { skip = 0 }
+    ' "$HOSTS_FILE") || { log "WARNING: could not read $HOSTS_FILE, skipping pins"; return 0; }
+
+    {
+        [ -z "$preserved" ] || printf '%s\n' "$preserved"
+        if [ -n "$pins" ]; then
+            printf '%s\n' "$HOSTS_BEGIN"
+            printf '%s\n' "$pins"
+            printf '%s\n' "$HOSTS_END"
+        fi
+    } > "$tmp" || { rm -f "$tmp"; log "WARNING: could not stage $HOSTS_FILE, skipping pins"; return 0; }
+
+    if cat "$tmp" > "$HOSTS_FILE" 2>/dev/null; then
+        [ -z "$pins" ] || log "Pinned $(printf '%s\n' "$pins" | wc -l | tr -d ' ') address(es) in $HOSTS_FILE"
+    else
+        log "WARNING: could not write $HOSTS_FILE; allowed names stay subject to DNS rotation"
+    fi
+    rm -f "$tmp"
+}
+
+# Sealed means nothing may leave, so leaving pins behind would only mislead
+# whoever reads the file next.
+clear_host_pins() { write_host_pins "" || true; }
+
 # Leave the container with no way out except loopback.
 #
 # `--init` flushes the existing rules long before it is in a position to install
@@ -195,6 +260,7 @@ seal_firewall() {
     fi
     ipset destroy "$IPSET_NAME" 2>/dev/null || true
     ipset destroy "$IPSET_TMP" 2>/dev/null || true
+    clear_host_pins
 }
 
 validate_whitelist() {
@@ -319,6 +385,7 @@ add_static_cidrs() {
 add_domains() {
     local set_name="$1" domain ips ip count=0 failed=0
 
+    HOST_PINS=""
     while read -r domain; do
         [ -n "$domain" ] || continue
         is_hostname "$domain" || die "invalid domain in $WHITELIST_FILE: $domain"
@@ -339,6 +406,7 @@ add_domains() {
             is_ipv4 "$ip" || die "invalid IP from DNS for $domain: $ip"
             log "Adding $ip for $domain"
             ipset add "$set_name" "$ip" -exist
+            HOST_PINS="${HOST_PINS}${HOST_PINS:+$'\n'}${ip}"$'\t'"${domain}"
             count=$((count + 1))
         done < <(echo "$ips")
     done < <(read_domains)
@@ -371,6 +439,10 @@ build_allowed_set() {
     ipset swap "$IPSET_TMP" "$IPSET_NAME"
     ipset destroy "$IPSET_TMP"
     trap - EXIT
+
+    # After the swap, never before: a pin is a promise that the address is in the
+    # live set, and until the swap it is only in the temp one.
+    write_host_pins "$HOST_PINS"
 
     log "Allow-list installed: $entries entries"
 }

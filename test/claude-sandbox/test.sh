@@ -105,6 +105,30 @@ check "allow-list-populated" bash -c '
     echo "allow-list entries: ${entries:-0}"
     [ "${entries:-0}" -gt 0 ]'
 
+# --- DNS pins --------------------------------------------------------------
+# The allow-list is a DNS snapshot, so a name that answers with a different
+# address later is rejected however correct the whitelist is. Behind a CDN that
+# is routine: repo.packagist.org hands out one address per query from a pool
+# spread across unrelated networks. Every allow-listed address is therefore
+# pinned in /etc/hosts, and these assert the pins are what resolution actually
+# uses — not merely that the file has some lines in it.
+check "host-pins-present" bash -c '
+    grep -q "^# BEGIN firewall pins" /etc/hosts'
+
+check "pinned-name-resolves-to-allowed-ip" bash -c '
+    ip=$(getent ahostsv4 repo.packagist.org | head -1 | cut -d" " -f1)
+    echo "repo.packagist.org -> ${ip:-<nothing>}"
+    [ -n "$ip" ] &&
+    sudo -n /usr/local/bin/configure-firewall.sh --list | grep -qF "$ip"'
+
+# The pin is only worth having if it beats DNS. Nothing else in this file would
+# notice a pin that exists but sits below the resolver in nsswitch order.
+check "pin-wins-over-dns" bash -c '
+    pinned=$(awk "/^# BEGIN firewall pins/,/^# END firewall pins/" /etc/hosts |
+        awk "\$2 == \"repo.packagist.org\" {print \$1; exit}")
+    resolved=$(getent ahostsv4 repo.packagist.org | head -1 | cut -d" " -f1)
+    [ -n "$pinned" ] && [ "$pinned" = "$resolved" ]'
+
 # --- Privilege boundary ----------------------------------------------------
 # The sandbox is only as good as this: `node` may run the firewall script as root
 # and nothing else. If plain sudo works, the container is not a sandbox.
