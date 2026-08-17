@@ -8,13 +8,14 @@ Runs Claude Code inside a Docker sandbox with a default-deny outbound firewall. 
 | Options Id | Description | Type | Default Value |
 |-----|-----|-----|-----|
 | timezone | IANA timezone for the container. The host's $TZ takes precedence when it is set. | string | Australia/Melbourne |
+| phpVersion | PHP version to install. The feature compiles from source, so a version it cannot fetch fails the image build rather than falling back. 'latest' tracks whatever upstream calls current at build time. | string | latest |
 | workspaceFolder | Folder name to mount this project under /workspaces inside the container. Claude keys its session history by path, so projects sharing a name share their history in the common config volume. The default resolves to the name of your project folder on the host. | string | ${localWorkspaceFolderBasename} |
 
 ## What this is
 
 A container for running Claude Code with its network access fenced in. It is not
-meant to be a general-purpose dev container — there is no language toolchain here
-beyond Node and Bun, and no attempt to be a comfortable place to hand-write code.
+meant to be a general-purpose dev container — the toolchain stops at Node, Bun and
+PHP, and there is no attempt to make this a comfortable place to hand-write code.
 
 The container starts with `iptables -P OUTPUT DROP` and an `ipset` allow-list built
 from `.devcontainer/firewall/firewall-whitelist-domains.json`. Anything not on that
@@ -62,6 +63,53 @@ has IPv6 enabled or the network is dual-stack.
 
 If the container has an IPv6 stack that `ip6tables` cannot be made to filter,
 `--init` fails rather than continuing.
+
+## PHP
+
+PHP and Composer come from `ghcr.io/devcontainers/features/php:1`. The reference is
+pinned to the feature's major version, not to a PHP version; which PHP you get is the
+`phpVersion` template option, defaulting to `latest` — so a rebuild tracks whatever
+upstream calls current unless you pin it:
+
+```bash
+devcontainer templates apply \
+  --workspace-folder . \
+  --template-id ghcr.io/pixelated-au/devcontainers/claude-sandbox:latest \
+  --template-args '{"phpVersion":"8.3"}'
+```
+
+The value is baked into `devcontainer.json` at apply time, so changing it later means
+editing the feature's `version` there and rebuilding. Free-form values are allowed —
+the proposals are only suggestions — but the feature compiles from source, so a
+version it cannot fetch fails the image build rather than falling back to anything.
+
+PHP itself is not optional. Template options are plain text substitution with no
+conditionals, so a boolean cannot add or remove a `features` entry; the only
+file-level escape hatch, `optionalPaths`, cannot reach inside `devcontainer.json`.
+If you want this template without PHP, drop the feature entry by hand after applying.
+
+That compile makes a cold build noticeably slower — cached layers make it a one-off,
+but expect it again after any change that invalidates the image. It runs at build
+time, before the firewall exists, so the sources it fetches (php.net, getcomposer.org,
+xdebug.org) do not need allow-listing.
+
+Composer at *runtime* does, and it takes three hosts rather than the one you would
+guess. `repo.packagist.org` serves the metadata — the allow-list resolves exact
+names, not wildcards, so `packagist.org` on its own does not cover it — and the
+package zips come from `codeload.github.com`, which is *not* in any `github_meta`
+section, so allowing GitHub is not enough. All three are in the whitelist. A private
+Composer repository or a Satis mirror needs adding by hand.
+
+Xdebug comes with the feature, configured upstream to start step debugging on every
+request. With nothing listening on port 9003 that puts `Could not connect to debugging
+client` on stderr for *every* `php` invocation — noise in the output of the one user
+this container has. `XDEBUG_MODE=off` is set in `containerEnv` to stop that, and it is
+overridable per command:
+
+```bash
+XDEBUG_MODE=coverage vendor/bin/phpunit
+XDEBUG_MODE=debug php script.php   # with a listener on 9003
+```
 
 ## Requirements
 
