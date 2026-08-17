@@ -11,7 +11,9 @@
     "marketplace.visualstudio.com",
     "vscode.blob.core.windows.net",
     "update.code.visualstudio.com",
-    "packagist.org"
+    "packagist.org",
+    "repo.packagist.org",
+    "codeload.github.com"
   ],
   "cidrs": [],
   "github_meta": {

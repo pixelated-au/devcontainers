@@ -16,6 +16,8 @@ check "npm"           npm --version
 check "claude"        claude --version
 check "bun"           bun --version
 check "bunx"          bunx --version
+check "php"           php --version
+check "composer"      composer --version
 check "git"           git --version
 check "gh"            gh --version
 check "delta"         delta --version
@@ -31,6 +33,17 @@ check "bun-is-versioned"    bash -c 'bun --version | grep -qE "^[0-9]+\.[0-9]+\.
 
 # The runtime, not just the binary — bun ships its own JS engine.
 check "bun-runs-js" bash -c '[ "$(bun -e "console.log(40 + 2)")" = "42" ]'
+
+# The php feature compiles from source and puts the result behind a `current`
+# symlink; a broken build can still leave a binary that refuses to run a script.
+check "php-runs-script" bash -c '[ "$(php -r "echo 40 + 2;")" = "42" ]'
+check "php-from-feature" bash -c '[ "$(command -v php)" = "/usr/local/php/current/bin/php" ]'
+
+# Xdebug ships enabled for step debugging, which puts "Could not connect to
+# debugging client" on stderr for every single php invocation. Silence is the
+# thing under test, not the variable — an upstream default that stops needing
+# XDEBUG_MODE should not fail here.
+check "php-stderr-is-quiet" bash -c '[ -z "$(php -r "echo 42;" 2>&1 >/dev/null)" ]'
 
 # Owned by `node`, so `bun upgrade` doesn't need root.
 check "bun-owned-by-node" bash -c '[ -O /home/node/.bun/bin/bun ]'
@@ -123,6 +136,16 @@ check "bun-installs-from-npm" bash -c '
 
 check "allows-bun-com" bash -c '
     curl -sS -o /dev/null --connect-timeout 10 --max-time 20 https://bun.com/install'
+
+# Composer needs three hosts, and only the first is obvious: metadata from
+# repo.packagist.org (packagist.org alone does not cover it — the allow-list
+# resolves exact names), then the dist zip from codeload.github.com, which is not
+# in any github_meta section. A real install is the only check that catches a
+# whitelist covering some of that path but not all of it.
+check "composer-installs-from-packagist" bash -c '
+    tmp=$(mktemp -d) && trap "rm -rf $tmp" EXIT &&
+    cd "$tmp" && composer require --no-interaction --no-progress psr/log &&
+    [ -f vendor/psr/log/composer.json ]'
 
 # The reason bun.com is on the allow-list. Version tags come from GitHub and the
 # installer from bun.com, so this fails if either is fenced off. On an

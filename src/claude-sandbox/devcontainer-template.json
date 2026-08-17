@@ -1,6 +1,6 @@
 {
     "id": "claude-sandbox",
-    "version": "1.7.0",
+    "version": "1.8.0",
     "name": "Claude Sandbox",
     "description": "Runs Claude Code inside a Docker sandbox with a default-deny outbound firewall. This isn't a general-purpose development container; it exists to give Claude a contained environment where it can only reach an explicit allow-list of hosts.",
     "documentationURL": "https://github.com/pixelated-au/devcontainers/tree/main/src/claude-sandbox",
@@ -11,7 +11,8 @@
         "claude-code",
         "sandbox",
         "firewall",
-        "node"
+        "node",
+        "php"
     ],
     "options": {
         "timezone": {
@@ -29,6 +30,17 @@
                 "America/Los_Angeles"
             ],
             "default": "Australia/Melbourne"
+        },
+        "phpVersion": {
+            "type": "string",
+            "description": "PHP version to install. The feature compiles from source, so a version it cannot fetch fails the image build rather than falling back. 'latest' tracks whatever upstream calls current at build time.",
+            "proposals": [
+                "latest",
+                "8.4",
+                "8.3",
+                "8.2"
+            ],
+            "default": "latest"
         },
         "workspaceFolder": {
             "type": "string",
