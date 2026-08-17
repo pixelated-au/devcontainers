@@ -1,8 +1,8 @@
 ## What this is
 
 A container for running Claude Code with its network access fenced in. It is not
-meant to be a general-purpose dev container — there is no language toolchain here
-beyond Node and Bun, and no attempt to be a comfortable place to hand-write code.
+meant to be a general-purpose dev container — the toolchain stops at Node, Bun and
+PHP, and there is no attempt to make this a comfortable place to hand-write code.
 
 The container starts with `iptables -P OUTPUT DROP` and an `ipset` allow-list built
 from `.devcontainer/firewall/firewall-whitelist-domains.json`. Anything not on that
@@ -51,6 +51,58 @@ has IPv6 enabled or the network is dual-stack.
 If the container has an IPv6 stack that `ip6tables` cannot be made to filter,
 `--init` fails rather than continuing.
 
+## PHP
+
+PHP and Composer come from `ghcr.io/devcontainers/features/php:1`. The reference is
+pinned to the feature's major version, not to a PHP version; which PHP you get is the
+`phpVersion` template option, defaulting to `latest` — so a rebuild tracks whatever
+upstream calls current unless you pin it:
+
+```bash
+devcontainer templates apply \
+  --workspace-folder . \
+  --template-id ghcr.io/pixelated-au/devcontainers/claude-sandbox:latest \
+  --template-args '{"phpVersion":"8.3"}'
+```
+
+The value is baked into `devcontainer.json` at apply time, so changing it later means
+editing the feature's `version` there and rebuilding. Free-form values are allowed —
+the proposals are only suggestions — but the feature compiles from source, so a
+version it cannot fetch fails the image build rather than falling back to anything.
+
+PHP itself is not optional. Template options are plain text substitution with no
+conditionals, so a boolean cannot add or remove a `features` entry; the only
+file-level escape hatch, `optionalPaths`, cannot reach inside `devcontainer.json`.
+If you want this template without PHP, drop the feature entry by hand after applying.
+
+That compile makes a cold build noticeably slower — cached layers make it a one-off,
+but expect it again after any change that invalidates the image. It runs at build
+time, before the firewall exists, so the sources it fetches (php.net, getcomposer.org,
+xdebug.org) do not need allow-listing.
+
+Composer at *runtime* does, and it takes three hosts rather than the one you would
+guess. `repo.packagist.org` serves the metadata — the allow-list resolves exact
+names, not wildcards, so `packagist.org` on its own does not cover it — and the
+package zips come from `codeload.github.com`, which is *not* in any `github_meta`
+section, so allowing GitHub is not enough. All three are in the whitelist. A private
+Composer repository or a Satis mirror needs adding by hand.
+
+`repo.packagist.org` is also what forced the DNS pinning described under *Editing
+the allow-list*: it sits behind a CDN that answers with a different address on
+almost every query, so allow-listing the address seen at start-up was a coin toss
+by the time Composer connected.
+
+Xdebug comes with the feature, configured upstream to start step debugging on every
+request. With nothing listening on port 9003 that puts `Could not connect to debugging
+client` on stderr for *every* `php` invocation — noise in the output of the one user
+this container has. `XDEBUG_MODE=off` is set in `containerEnv` to stop that, and it is
+overridable per command:
+
+```bash
+XDEBUG_MODE=coverage vendor/bin/phpunit
+XDEBUG_MODE=debug php script.php   # with a listener on 9003
+```
+
 ## Requirements
 
 - Docker with `NET_ADMIN` and `NET_RAW` available to the container. Rootless Docker
@@ -80,11 +132,44 @@ need it cut immediately.
 
 Three shapes of entry are supported in the JSON:
 
-- `domains` — resolved via DNS at reload time. A domain behind rotating IPs (most
-  CDNs) may need a re-run when its records change; this is the main sharp edge.
+- `domains` — resolved via DNS at reload time, and pinned in `/etc/hosts` (below).
 - `cidrs` — static ranges, never re-resolved.
 - `github_meta` — pulls current GitHub ranges from `api.github.com/meta`. Set
   `enabled: false` if you don't want the container talking to GitHub at all.
+
+### Why domains are pinned in /etc/hosts
+
+An allow-list built from DNS quietly assumes a name keeps resolving to the same
+address. Behind a CDN it does not. `repo.packagist.org` answers with a *different
+single* A record per query, from a pool spread across unrelated networks:
+
+```
+1.1.1.1          -> 138.199.24.218
+8.8.8.8          -> 156.146.56.161
+9.9.9.9          -> 156.146.56.171
+```
+
+So the address allow-listed at start-up and the one Composer dials seconds later
+are frequently not the same, and the connection is rejected — intermittently,
+which is the worst way to meet a problem. Covering the pool with `cidrs` would
+mean allow-listing most of a CDN provider's network.
+
+Instead, every address added to the ipset is also written into `/etc/hosts`, in a
+block between `# BEGIN firewall pins` and `# END firewall pins` that is rebuilt on
+every `--init` and `--reload`. Nothing in the container can dial an address that
+was not allow-listed, because it can no longer learn one: glibc answers from the
+hosts file and never asks DNS for those names. All records are pinned, not just
+the first, so clients can still fail over between allowed addresses.
+
+Consequences worth knowing:
+
+- A pinned address that goes unhealthy stays broken until the next reload. That is
+  the staleness the ipset already had, now visible in one more place.
+- Only A records are pinned, so `AAAA` for a pinned name resolves to nothing —
+  which suits an allow-list that is IPv4-only by construction.
+- Sealing removes the block, and a successful `--init` restores it.
+- Edit the block by hand and the next reload will overwrite you. Change the
+  whitelist instead.
 
 That last one is rate-limited to 60 requests an hour **per source IP**, unauthenticated,
 and a container that cannot fetch it seals itself rather than come up without the
@@ -170,6 +255,69 @@ on the host and reconnect.
 Being `remoteEnv`, this is read when you connect, not when the container is built —
 editing it takes effect on the next shell, with no rebuild.
 
+## Pasting images
+
+Copying a screenshot and pressing ⌘V into Claude does nothing in here, and no
+amount of container-side configuration will fix it. Claude Code is running in the
+container; the macOS pasteboard is on the host; the Linux tools it would otherwise
+reach for (`xclip`, `wl-paste`) need a display server that no devcontainer has.
+The upstream request to bridge it over VS Code's IPC socket was
+[closed as not planned](https://github.com/anthropics/claude-code/issues/51244),
+so this is the arrangement, not a stopgap.
+
+What does work is that Claude reads an image you give it a *path* to. So the
+clipboard crosses the boundary as a file: `~/.clipdrop` on the host is mounted
+read-only at `/clipdrop`, and `clip-drop.sh` writes the clipboard image there and
+hands back the path it has inside the container.
+
+```bash
+# from your project root, with an image on the clipboard
+./.devcontainer/clip-drop.sh          # prints /clipdrop/clip-20260817-113808.png
+./.devcontainer/clip-drop.sh --copy   # puts that path on the clipboard instead
+```
+
+Pressing it with text on the clipboard is a no-op, so it is safe on a hotkey. Old
+images are pruned to the most recent 50 (`--keep N`). Nothing is installed:
+the pasteboard read is `osascript`, not `pngpaste`.
+
+Binding it to a key is where terminals differ:
+
+- **iTerm2** does it natively. Settings → Profiles → Keys, add a shortcut with the
+  action **Run Coprocess**, pointing at `clip-drop.sh`. A coprocess's stdout is
+  treated as keyboard input, so the path is typed straight into Claude's prompt —
+  which is why the default output ends in a space. One coprocess per session.
+- **Ghostty** cannot. Its key actions are a fixed set (`ghostty +list-actions`)
+  with nothing that runs a command; `text:` sends static strings only. Use
+  `--copy` from Raycast, Alfred or Keyboard Maestro and then ⌘V — which has the
+  advantage of working identically in every terminal.
+- **Hammerspoon** types it directly if you want one keystroke with no terminal
+  support at all:
+
+  ```lua
+  hs.hotkey.bind({"cmd", "shift"}, "v", function()
+    local out = hs.execute(os.getenv("HOME") .. "/path/to/clip-drop.sh")
+    if out and out ~= "" then hs.eventtap.keyStrokes(out)
+    else hs.eventtap.keyStroke({"cmd"}, "v") end
+  end)
+  ```
+
+Set `CLAUDE_CLIPDROP_DIR` on the host (relative to `$HOME`, like
+`CLAUDE_HOST_CONFIG_DIR`) to use a directory other than `.clipdrop`.
+`initializeCommand` creates it, so a missing one cannot fail the container start.
+
+If all you need is screenshots, there is a version of this with no script at all:
+point macOS at a gitignored folder inside the workspace, which is already
+bind-mounted read-write.
+
+```bash
+mkdir -p .clipdrop && echo .clipdrop/ >> .git/info/exclude
+defaults write com.apple.screencapture location "$PWD/.clipdrop" && killall SystemUIServer
+```
+
+⌘⇧4 then writes into the project, and `@.clipdrop/` plus Tab completes the path
+inside Claude. It does not cover an image copied out of a browser, which is what
+`clip-drop.sh` is for.
+
 ## Host configuration passed through
 
 Your host slash-commands and subagents are mounted read-only:
@@ -233,6 +381,10 @@ send bytes; it does nothing about what happens to the code inside it.
 - Outbound SSH on port 22 is allowed to any host.
 - The `~/.claude` and `~/.config` volumes are shared by every container from this
   template, so a credential written in one project is available to all of them.
+- `~/.clipdrop` is a host directory outside the workspace, and everything ever
+  dropped in it is readable in here. It is mounted read-only, so the container
+  cannot write to it, but do not use it as a staging area for anything you would
+  not hand to the agent.
 - `node` may run `configure-firewall.sh` as root via a narrow sudoers rule and
   nothing else. That script is the sandbox's trusted boundary — treat edits to it
   the way you'd treat edits to a sudoers file. It refuses `--file` (and

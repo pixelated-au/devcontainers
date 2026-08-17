@@ -13,6 +13,17 @@
     }
   },
 
+  // PHP and Composer. The feature compiles PHP from source at image build time —
+  // slow on a cold build, but it runs before the firewall exists, so php.net and
+  // getcomposer.org do not need to be on the allow-list. Composer at *runtime*
+  // does: packagist.org and repo.packagist.org are in the whitelist, and dist
+  // downloads from GitHub ride on the github_meta ranges.
+  "features": {
+    "ghcr.io/devcontainers/features/php:1": {
+      "version": "${templateOption:phpVersion}"
+    }
+  },
+
   // Chrome Remote Debugging
   "forwardPorts": [9222],
   "portsAttributes": {
@@ -70,14 +81,30 @@
 
     // Bind-mounted rather than baked in, so editing the JSON on the host and
     // running `firewall-ctl.sh reload` takes effect without a rebuild.
-    "source=${localWorkspaceFolder}/.devcontainer/firewall,target=/etc/firewall,type=bind,readonly"
+    "source=${localWorkspaceFolder}/.devcontainer/firewall,target=/etc/firewall,type=bind,readonly",
+
+    // Where ./clip-drop.sh (host-side) leaves clipboard images. Claude cannot
+    // reach the macOS pasteboard from in here, but it will read an image you
+    // give it a path to — so the clipboard crosses the boundary as a file.
+    // Read-only: Claude needs to read these, never to write into a host
+    // directory outside the workspace. Set CLAUDE_CLIPDROP_DIR (relative to
+    // $HOME, like CLAUDE_HOST_CONFIG_DIR) to put the directory elsewhere.
+    "type=bind,source=${localEnv:HOME}/${localEnv:CLAUDE_CLIPDROP_DIR:.clipdrop},target=/clipdrop,readonly"
   ],
 
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "CLAUDE_CONFIG_DIR": "/home/node/.claude",
     "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
-    "FIREWALL_WHITELIST_FILE": "/etc/firewall/firewall-whitelist-domains.json"
+    "FIREWALL_WHITELIST_FILE": "/etc/firewall/firewall-whitelist-domains.json",
+
+    // The php feature ships an xdebug.ini with step debugging on for every
+    // request, so each `php` invocation writes "Could not connect to debugging
+    // client" to stderr when nothing is listening on 9003 — which, in a container
+    // whose main user is an agent reading command output, is noise on every call.
+    // Off by default and overridable per command: `XDEBUG_MODE=debug php ...`,
+    // or `XDEBUG_MODE=coverage` for phpunit.
+    "XDEBUG_MODE": "off"
   },
 
   // TERM only advertises 256 colours, so 24-bit support is detected through
@@ -100,7 +127,7 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${templateOption:workspaceFolder},type=bind,consistency=delegated",
   "workspaceFolder": "/workspaces/${templateOption:workspaceFolder}",
 
-  "initializeCommand": "mkdir -p \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/commands\" \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/agents\"",
+  "initializeCommand": "mkdir -p \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/commands\" \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/agents\" \"${localEnv:HOME}/${localEnv:CLAUDE_CLIPDROP_DIR:.clipdrop}\"",
   "postCreateCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
 
   // iptables rules live in the container's network namespace, not the image, so

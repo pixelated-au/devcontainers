@@ -43,6 +43,11 @@ check "warns-sealed-in-bash" bash -c '
 check "warns-sealed-in-zsh" bash -c '
     su node -c "zsh -ic true" 2>&1 | grep -q "firewall is sealed"'
 
+# A sealed container allows nothing out, so pins left pointing at addresses that
+# are no longer in any allow-list would only mislead whoever reads the file next.
+check "seal-clears-host-pins" bash -c '
+    ! grep -q "^# BEGIN firewall pins" /etc/hosts'
+
 
 # --- Sealing has to stay recoverable ---------------------------------------
 # Rebuilding needs egress of its own (DNS, and api.github.com for the meta
@@ -176,5 +181,9 @@ check "final-state-allows-github" bash -c '
     curl -sS --connect-timeout 10 --max-time 20 https://api.github.com/zen >/dev/null'
 check "final-state-blocks-example" bash -c '
     ! curl -sS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1'
+# The other half of seal-clears-host-pins: a recovered container gets them back,
+# so the earlier removal cannot pass by leaving pinning permanently broken.
+check "final-state-restores-host-pins" bash -c '
+    grep -q "^# BEGIN firewall pins" /etc/hosts'
 
 reportResults
