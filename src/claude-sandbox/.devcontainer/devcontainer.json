@@ -81,7 +81,15 @@
 
     // Bind-mounted rather than baked in, so editing the JSON on the host and
     // running `firewall-ctl.sh reload` takes effect without a rebuild.
-    "source=${localWorkspaceFolder}/.devcontainer/firewall,target=/etc/firewall,type=bind,readonly"
+    "source=${localWorkspaceFolder}/.devcontainer/firewall,target=/etc/firewall,type=bind,readonly",
+
+    // Where ./clip-drop.sh (host-side) leaves clipboard images. Claude cannot
+    // reach the macOS pasteboard from in here, but it will read an image you
+    // give it a path to — so the clipboard crosses the boundary as a file.
+    // Read-only: Claude needs to read these, never to write into a host
+    // directory outside the workspace. Set CLAUDE_CLIPDROP_DIR (relative to
+    // $HOME, like CLAUDE_HOST_CONFIG_DIR) to put the directory elsewhere.
+    "type=bind,source=${localEnv:HOME}/${localEnv:CLAUDE_CLIPDROP_DIR:.clipdrop},target=/clipdrop,readonly"
   ],
 
   "containerEnv": {
@@ -119,7 +127,7 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${templateOption:workspaceFolder},type=bind,consistency=delegated",
   "workspaceFolder": "/workspaces/${templateOption:workspaceFolder}",
 
-  "initializeCommand": "mkdir -p \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/commands\" \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/agents\"",
+  "initializeCommand": "mkdir -p \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/commands\" \"${localEnv:HOME}/${localEnv:CLAUDE_HOST_CONFIG_DIR:.claude}/agents\" \"${localEnv:HOME}/${localEnv:CLAUDE_CLIPDROP_DIR:.clipdrop}\"",
   "postCreateCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
 
   // iptables rules live in the container's network namespace, not the image, so
