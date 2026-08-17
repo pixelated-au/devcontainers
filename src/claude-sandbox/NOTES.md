@@ -87,6 +87,11 @@ package zips come from `codeload.github.com`, which is *not* in any `github_meta
 section, so allowing GitHub is not enough. All three are in the whitelist. A private
 Composer repository or a Satis mirror needs adding by hand.
 
+`repo.packagist.org` is also what forced the DNS pinning described under *Editing
+the allow-list*: it sits behind a CDN that answers with a different address on
+almost every query, so allow-listing the address seen at start-up was a coin toss
+by the time Composer connected.
+
 Xdebug comes with the feature, configured upstream to start step debugging on every
 request. With nothing listening on port 9003 that puts `Could not connect to debugging
 client` on stderr for *every* `php` invocation — noise in the output of the one user
@@ -127,11 +132,44 @@ need it cut immediately.
 
 Three shapes of entry are supported in the JSON:
 
-- `domains` — resolved via DNS at reload time. A domain behind rotating IPs (most
-  CDNs) may need a re-run when its records change; this is the main sharp edge.
+- `domains` — resolved via DNS at reload time, and pinned in `/etc/hosts` (below).
 - `cidrs` — static ranges, never re-resolved.
 - `github_meta` — pulls current GitHub ranges from `api.github.com/meta`. Set
   `enabled: false` if you don't want the container talking to GitHub at all.
+
+### Why domains are pinned in /etc/hosts
+
+An allow-list built from DNS quietly assumes a name keeps resolving to the same
+address. Behind a CDN it does not. `repo.packagist.org` answers with a *different
+single* A record per query, from a pool spread across unrelated networks:
+
+```
+1.1.1.1          -> 138.199.24.218
+8.8.8.8          -> 156.146.56.161
+9.9.9.9          -> 156.146.56.171
+```
+
+So the address allow-listed at start-up and the one Composer dials seconds later
+are frequently not the same, and the connection is rejected — intermittently,
+which is the worst way to meet a problem. Covering the pool with `cidrs` would
+mean allow-listing most of a CDN provider's network.
+
+Instead, every address added to the ipset is also written into `/etc/hosts`, in a
+block between `# BEGIN firewall pins` and `# END firewall pins` that is rebuilt on
+every `--init` and `--reload`. Nothing in the container can dial an address that
+was not allow-listed, because it can no longer learn one: glibc answers from the
+hosts file and never asks DNS for those names. All records are pinned, not just
+the first, so clients can still fail over between allowed addresses.
+
+Consequences worth knowing:
+
+- A pinned address that goes unhealthy stays broken until the next reload. That is
+  the staleness the ipset already had, now visible in one more place.
+- Only A records are pinned, so `AAAA` for a pinned name resolves to nothing —
+  which suits an allow-list that is IPv4-only by construction.
+- Sealing removes the block, and a successful `--init` restores it.
+- Edit the block by hand and the next reload will overwrite you. Change the
+  whitelist instead.
 
 That last one is rate-limited to 60 requests an hour **per source IP**, unauthenticated,
 and a container that cannot fetch it seals itself rather than come up without the
