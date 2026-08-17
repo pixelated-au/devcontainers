@@ -32,12 +32,10 @@ a PR against [`collection-index.yml`](https://github.com/devcontainers/devcontai
 Applying a template copies its files into your project — it does not create a
 dependency on this repo. Once applied, the config is yours to edit.
 
-The template ships `LICENSE.md` and `THIRD-PARTY-LICENSES.md` at the project root,
-which will overwrite a `LICENSE.md` you already have. Skip them with:
-
-```bash
---omit-paths '["LICENSE.md"]'
-```
+The template's own `LICENSE.md` and `THIRD-PARTY-LICENSES.md` are copied into
+`.devcontainer/`, alongside the files they apply to. They used to land at the project
+root, where `LICENSE.md` would silently overwrite the licence of the project the
+template was applied to.
 
 ## Repository layout
 
@@ -46,7 +44,8 @@ src/<template-id>/
     devcontainer-template.json   # id, version, options, metadata
     NOTES.md                     # hand-written docs, appended to the generated README
     README.md                    # generated on release; edit NOTES.md instead
-    .devcontainer/               # everything copied into the user's project
+    .devcontainer/               # everything copied into the user's project,
+                                 # including the template's own licence files
 test/<template-id>/test.sh       # smoke test run inside the built container
 test/test-utils/                 # shared check/reportResults helpers
 .github/actions/smoke-test/      # applies a template with default options, then builds it
@@ -87,4 +86,4 @@ a generated `README.md` gets overwritten; edit `NOTES.md`.
 
 MIT — see [LICENSE](LICENSE). Portions are derived from Anthropic's Claude Code
 devcontainer example; see
-[THIRD-PARTY-LICENSES.md](src/claude-sandbox/THIRD-PARTY-LICENSES.md).
+[THIRD-PARTY-LICENSES.md](src/claude-sandbox/.devcontainer/THIRD-PARTY-LICENSES.md).
