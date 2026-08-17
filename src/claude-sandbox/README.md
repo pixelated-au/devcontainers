@@ -268,6 +268,69 @@ on the host and reconnect.
 Being `remoteEnv`, this is read when you connect, not when the container is built —
 editing it takes effect on the next shell, with no rebuild.
 
+## Pasting images
+
+Copying a screenshot and pressing ⌘V into Claude does nothing in here, and no
+amount of container-side configuration will fix it. Claude Code is running in the
+container; the macOS pasteboard is on the host; the Linux tools it would otherwise
+reach for (`xclip`, `wl-paste`) need a display server that no devcontainer has.
+The upstream request to bridge it over VS Code's IPC socket was
+[closed as not planned](https://github.com/anthropics/claude-code/issues/51244),
+so this is the arrangement, not a stopgap.
+
+What does work is that Claude reads an image you give it a *path* to. So the
+clipboard crosses the boundary as a file: `~/.clipdrop` on the host is mounted
+read-only at `/clipdrop`, and `clip-drop.sh` writes the clipboard image there and
+hands back the path it has inside the container.
+
+```bash
+# from your project root, with an image on the clipboard
+./.devcontainer/clip-drop.sh          # prints /clipdrop/clip-20260817-113808.png
+./.devcontainer/clip-drop.sh --copy   # puts that path on the clipboard instead
+```
+
+Pressing it with text on the clipboard is a no-op, so it is safe on a hotkey. Old
+images are pruned to the most recent 50 (`--keep N`). Nothing is installed:
+the pasteboard read is `osascript`, not `pngpaste`.
+
+Binding it to a key is where terminals differ:
+
+- **iTerm2** does it natively. Settings → Profiles → Keys, add a shortcut with the
+  action **Run Coprocess**, pointing at `clip-drop.sh`. A coprocess's stdout is
+  treated as keyboard input, so the path is typed straight into Claude's prompt —
+  which is why the default output ends in a space. One coprocess per session.
+- **Ghostty** cannot. Its key actions are a fixed set (`ghostty +list-actions`)
+  with nothing that runs a command; `text:` sends static strings only. Use
+  `--copy` from Raycast, Alfred or Keyboard Maestro and then ⌘V — which has the
+  advantage of working identically in every terminal.
+- **Hammerspoon** types it directly if you want one keystroke with no terminal
+  support at all:
+
+  ```lua
+  hs.hotkey.bind({"cmd", "shift"}, "v", function()
+    local out = hs.execute(os.getenv("HOME") .. "/path/to/clip-drop.sh")
+    if out and out ~= "" then hs.eventtap.keyStrokes(out)
+    else hs.eventtap.keyStroke({"cmd"}, "v") end
+  end)
+  ```
+
+Set `CLAUDE_CLIPDROP_DIR` on the host (relative to `$HOME`, like
+`CLAUDE_HOST_CONFIG_DIR`) to use a directory other than `.clipdrop`.
+`initializeCommand` creates it, so a missing one cannot fail the container start.
+
+If all you need is screenshots, there is a version of this with no script at all:
+point macOS at a gitignored folder inside the workspace, which is already
+bind-mounted read-write.
+
+```bash
+mkdir -p .clipdrop && echo .clipdrop/ >> .git/info/exclude
+defaults write com.apple.screencapture location "$PWD/.clipdrop" && killall SystemUIServer
+```
+
+⌘⇧4 then writes into the project, and `@.clipdrop/` plus Tab completes the path
+inside Claude. It does not cover an image copied out of a browser, which is what
+`clip-drop.sh` is for.
+
 ## Host configuration passed through
 
 Your host slash-commands and subagents are mounted read-only:
@@ -331,6 +394,10 @@ send bytes; it does nothing about what happens to the code inside it.
 - Outbound SSH on port 22 is allowed to any host.
 - The `~/.claude` and `~/.config` volumes are shared by every container from this
   template, so a credential written in one project is available to all of them.
+- `~/.clipdrop` is a host directory outside the workspace, and everything ever
+  dropped in it is readable in here. It is mounted read-only, so the container
+  cannot write to it, but do not use it as a staging area for anything you would
+  not hand to the agent.
 - `node` may run `configure-firewall.sh` as root via a narrow sudoers rule and
   nothing else. That script is the sandbox's trusted boundary — treat edits to it
   the way you'd treat edits to a sudoers file. It refuses `--file` (and

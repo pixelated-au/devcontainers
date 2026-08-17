@@ -78,6 +78,12 @@ check "git-safe-directory" bash -c "
 check "host-commands-mount" bash -c '[ -d /home/node/.claude/commands ]'
 check "host-agents-mount"   bash -c '[ -d /home/node/.claude/agents ]'
 
+# The clipboard drop directory. Read-only is the point rather than a detail: it
+# is a host path outside the workspace, and Claude only ever needs to read the
+# images clip-drop.sh leaves here.
+check "clipdrop-mount"      bash -c 'mountpoint -q /clipdrop'
+check "clipdrop-readonly"   bash -c '! touch /clipdrop/.write-probe.$$ 2>/dev/null'
+
 # --- Persisted ~/.config ---------------------------------------------------
 # A directory that merely exists would pass a -d check and still be discarded on
 # rebuild, so assert it is actually a mount.
