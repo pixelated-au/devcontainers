@@ -1,6 +1,6 @@
 {
     "id": "claude-sandbox",
-    "version": "1.9.0",
+    "version": "1.10.0",
     "name": "Claude Sandbox",
     "description": "Runs Claude Code inside a Docker sandbox with a default-deny outbound firewall. This isn't a general-purpose development container; it exists to give Claude a contained environment where it can only reach an explicit allow-list of hosts.",
     "documentationURL": "https://github.com/pixelated-au/devcontainers/tree/main/src/claude-sandbox",
@@ -12,7 +12,8 @@
         "sandbox",
         "firewall",
         "node",
-        "php"
+        "php",
+        "docker"
     ],
     "options": {
         "timezone": {
@@ -41,6 +42,25 @@
                 "8.2"
             ],
             "default": "latest"
+        },
+        "dockerSocket": {
+            "type": "string",
+            "description": "Host Docker socket to expose inside the container, letting Claude drive containers you already run on the host (docker compose exec, Laravel Sail, wp-cli). Leave it at /dev/null to keep Docker out of the sandbox: the socket is root on the host, so anything that can reach it can escape the container entirely. /var/run/docker.sock covers Docker Desktop and standard Linux.",
+            "proposals": [
+                "/dev/null",
+                "/var/run/docker.sock",
+                "${localEnv:XDG_RUNTIME_DIR}/docker.sock"
+            ],
+            "default": "/dev/null"
+        },
+        "dockerHost": {
+            "type": "string",
+            "description": "Value for DOCKER_HOST inside the container. The default is the Docker CLI's own default, and with dockerSocket left at /dev/null it resolves to nothing, which is the point. Set it to unix:///var/run/docker-proxy/docker.sock to use the filtered socket from .devcontainer/socket-proxy.yml instead \u2014 that route keeps dockerSocket at /dev/null, so the real socket is never mounted and container creation is refused.",
+            "proposals": [
+                "unix:///var/run/docker.sock",
+                "unix:///var/run/docker-proxy/docker.sock"
+            ],
+            "default": "unix:///var/run/docker.sock"
         },
         "workspaceFolder": {
             "type": "string",
