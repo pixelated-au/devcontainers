@@ -1,5 +1,5 @@
 {
-  "$comment": "Domains and CIDRs allowed through the outbound firewall. Edit, then run `.devcontainer/firewall-ctl.sh reload` from the host.",
+  "$comment": "Destinations allowed through the outbound firewall. Edit, then run `.devcontainer/firewall-ctl.sh reload` from the host \u2014 except host_ports, which is an iptables rule rather than an allow-list entry and needs `init`.",
   "domains": [
     "registry.npmjs.org",
     "bun.com",
@@ -16,6 +16,8 @@
     "codeload.github.com"
   ],
   "cidrs": [],
+  "$comment_host_ports": "TCP ports on the host machine itself, each allowed by its own iptables rule rather than through the address allow-list, which has no notion of a port. 3334 is the listener /usr/local/bin/host-editor forwards to. Changing this needs `firewall-ctl.sh init`, not `reload`.",
+  "host_ports": [],
   "github_meta": {
     "enabled": true,
     "sections": [

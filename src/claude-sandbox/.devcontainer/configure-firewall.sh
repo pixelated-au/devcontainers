@@ -279,6 +279,19 @@ read_cidrs() {
     jq -r 'if type == "array" then [] else (.cidrs // []) end | .[]' "$WHITELIST_FILE"
 }
 
+# Ports on the host machine itself, for tools in here that call back out to
+# something you run on your Mac — an editor bridge, a language server.
+#
+# Deliberately not part of the ipset, which is the reason this is a separate list
+# rather than another entry in `cidrs`. The ipset is matched on destination
+# address with no notion of a port, so allow-listing the host that way opens
+# every port on it: your Sail app on :80, MySQL on :3306, Mailpit, and whatever
+# else happens to be listening. These become one iptables rule each, scoped to
+# the single TCP port named.
+read_host_ports() {
+    jq -r 'if type == "array" then [] else (.host_ports // []) end | .[]' "$WHITELIST_FILE"
+}
+
 github_enabled() {
     local enabled
     enabled=$(jq -r 'if type == "array" then true else (.github_meta.enabled // false) end' "$WHITELIST_FILE")
@@ -380,6 +393,42 @@ add_static_cidrs() {
         log "Adding static range $cidr"
         ipset add "$set_name" "$cidr" -exist
     done < <(read_cidrs)
+}
+
+# One ACCEPT per host_ports entry, for TCP to the host and nothing else.
+#
+# The address comes from resolving host.docker.internal rather than from the
+# default route: on Docker Desktop the two differ — the gateway is 172.17.0.1
+# while the host answers on 192.168.65.254 — and it is the latter that a request
+# to the host actually goes to. Where the name does not resolve at all (plain
+# Linux Docker without --add-host) the default route *is* the host, and the
+# HOST_NETWORK rules above already cover it, so there is nothing to do and
+# saying so is more useful than failing.
+#
+# Called from install_firewall only. `--reload` rebuilds the ipset and leaves
+# iptables alone, so a changed host_ports needs `firewall-ctl.sh init`.
+add_host_port_rules() {
+    local ports=() port host_addr
+
+    mapfile -t ports < <(read_host_ports)
+    [ "${#ports[@]}" -gt 0 ] || return 0
+
+    host_addr=$(getent hosts host.docker.internal 2>/dev/null | awk '{print $1; exit}')
+    if [ -z "$host_addr" ]; then
+        log "WARNING: host_ports is set but host.docker.internal does not resolve; skipping"
+        log "WARNING: on plain Linux Docker the host is the default route, already allowed"
+        return 0
+    fi
+    is_ipv4 "$host_addr" \
+        || die "host.docker.internal resolved to a non-IPv4 address: $host_addr"
+
+    for port in "${ports[@]}"; do
+        [ -n "$port" ] || continue
+        [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] \
+            || die "invalid port in $WHITELIST_FILE: $port"
+        log "Allowing TCP to host ${host_addr}:${port}"
+        iptables -A OUTPUT -d "$host_addr" -p tcp --dport "$port" -j ACCEPT
+    done
 }
 
 add_domains() {
@@ -600,6 +649,10 @@ install_firewall() {
 
     # Then allow only specific outbound traffic to allowed domains
     iptables -A OUTPUT -m set --match-set "$IPSET_NAME" dst -j ACCEPT
+
+    # Named ports on the host, if any. Must come before the REJECT below, which
+    # is what everything not matched so far falls through to.
+    add_host_port_rules
 
     # Explicitly REJECT all other outbound traffic for immediate feedback
     iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited

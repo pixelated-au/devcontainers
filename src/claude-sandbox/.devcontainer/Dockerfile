@@ -126,6 +126,22 @@ RUN curl -fsSL https://bun.com/install | bash
 # The sudoers rule is deliberately narrow: `node` may run configure-firewall.sh as
 # root and nothing else, so a compromised agent can't sudo its way out.
 USER root
+
+# "Open in editor" links, from in here to the editor on your machine.
+#
+# What tooling like Vite's error overlay calls when you click a stack frame: it
+# runs `launch-editor`, which shells out to $LAUNCH_EDITOR with the file, line
+# and column. Editors do not exist in this container, so this forwards the three
+# arguments to a small listener you run on the host instead.
+#
+# Two things it needs that it does not carry itself. The firewall blocks the host
+# by default — add the port to `host_ports` in the whitelist, which is what makes
+# an exception for exactly that one port. And the path it forwards is the path in
+# here, `/workspaces/<name>/...`, which does not exist on the host; the listener
+# is the right place to map it.
+COPY host-editor /usr/local/bin/host-editor
+RUN chmod 755 /usr/local/bin/host-editor
+
 COPY configure-firewall.sh /usr/local/bin/
 COPY firewall/firewall-whitelist-domains.json /etc/firewall/
 COPY firewall-warning.sh /etc/firewall-warning.sh
