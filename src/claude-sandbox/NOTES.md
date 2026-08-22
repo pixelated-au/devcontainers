@@ -103,6 +103,165 @@ XDEBUG_MODE=coverage vendor/bin/phpunit
 XDEBUG_MODE=debug php script.php   # with a listener on 9003
 ```
 
+## Docker
+
+By default there is no Docker in the sandbox in any meaningful sense: the CLI is
+installed, and it has nothing to talk to. Point the `dockerSocket` template option at
+the host's socket and it does — Claude can then drive containers you are already
+running on the host, which is the point of the thing:
+
+```bash
+devcontainer templates apply \
+  --workspace-folder . \
+  --template-id ghcr.io/pixelated-au/devcontainers/claude-sandbox:latest \
+  --template-args '{"dockerSocket":"/var/run/docker.sock"}'
+```
+
+`/var/run/docker.sock` is right for Docker Desktop on macOS and for a standard Linux
+install. Rootless Docker puts it under `$XDG_RUNTIME_DIR`, and the option value is
+substituted verbatim, so `${localEnv:XDG_RUNTIME_DIR}/docker.sock` survives into
+`devcontainer.json` and is resolved at container start rather than at apply time.
+Like every template option it is baked in at apply time; changing it later means
+editing the mount in `devcontainer.json` and rebuilding.
+
+### How it is made optional
+
+`ghcr.io/devcontainers/features/docker-outside-of-docker` declares a mount of
+`/var/run/docker.sock` in the feature itself, so merely listing the feature hands
+over the socket. Setting the feature to `false` does not help — the merged
+configuration still carries the mount — and, as noted under *PHP*, template options
+cannot add or remove a `features` entry at all.
+
+What does work is that the devcontainer CLI de-duplicates mounts by target and lets
+`devcontainer.json` win. A mount on `/var/run/docker-host.sock` in the `mounts` array
+therefore replaces the feature's, and the template option chooses its source. The
+feature is always present; what it can reach is not.
+
+`/dev/null` is the off value because it has to be a path that exists on the host —
+Docker would otherwise create a directory there — and because a character device is
+harmless. The feature's entrypoint proxies it like any other socket and every
+connection fails, so `docker ps` reports that it cannot reach a daemon, which is the
+truth.
+
+### containerUser
+
+Turning the feature on requires `"containerUser": "root"`, and the template sets it
+whether or not a socket is mounted. The feature's entrypoint is what makes the socket
+usable by `node`: the host socket arrives root-owned and mode 0660, so the entrypoint
+socat-proxies it to one `node` can open. That runs as PID 1's user, under `set -e`,
+over calls that need root — as `node` it would hit the narrow sudoers rule, fail, and
+take container start down with it.
+
+`remoteUser` stays `node`, so shells, `devcontainer exec` and the lifecycle commands
+are unchanged, and the sudoers rule still bounds what the agent can do as root. Only
+PID 1 — a `sleep` loop — is root.
+
+### What works from in here, and what does not
+
+Anything that operates on containers that are already running: `docker compose exec`,
+`docker exec`, `docker logs`, `docker ps`, and the Laravel Sail commands built on them
+(`sail artisan`, `sail composer`, `sail test`, `sail npm`, `sail mysql`). These run
+the command *inside* the target container, so the sandbox does not even need a network
+route to it.
+
+Builds and lifecycle commands — `docker compose up`, `down`, `build`, `sail up` — do
+not, and should be run from the host. The daemon is on the host, so a relative path in
+a compose file resolves against the host filesystem: a bind mount written as
+`.:/var/www/html` becomes `/workspaces/<name>` *on your machine*, which does not
+exist, and Docker silently creates an empty directory and mounts that. Buildx is left
+uninstalled for the same reason, so builds fail loudly rather than quietly producing
+something wrong. Worse, if the project name matches, `up` will happily recreate the
+containers you are actually using with those broken mounts.
+
+Which brings up the project name. Compose derives it from the working directory's
+basename, and in here that is the `workspaceFolder` template option, not the host
+directory. Where the two differ, compose looks for a project that does not exist and
+finds none of your containers. Pin it:
+
+```jsonc
+"containerEnv": {
+  "COMPOSE_PROJECT_NAME": "the-name-the-host-uses"
+}
+```
+
+### Reaching the containers over the network
+
+Separate from the socket, and not needed for `exec`. The sandbox sits on Docker's
+default bridge; a compose project gets a network of its own, on a different subnet
+that the firewall does not allow. If you want Claude to open an HTTP connection to the
+app, or talk to MySQL directly, it needs both a route and permission:
+
+```bash
+docker network connect <project>_<network> <sandbox-container>
+```
+
+and the network's subnet added to `cidrs` in `firewall-whitelist-domains.json`,
+followed by a `firewall-ctl.sh reload`. Attaching the network through `runArgs`
+instead makes it permanent, at the cost of `devcontainer up` failing whenever the
+other stack is down.
+
+### The cost
+
+Read the last section of this document before turning any of this on. The socket is
+the Docker daemon's full API and the daemon is root on the host; `docker run -v
+/:/host` is a two-second escape from this container to the whole machine. Nothing in
+this template constrains it — it is a Unix socket, so iptables never sees it, and a
+container Claude starts gets unfiltered egress of its own. It is a deliberate trade of
+the sandbox for the convenience, which is why it is off unless you ask for it.
+
+Most of that cost is avoidable, and the next section is the recommended way in.
+
+### The filtered socket
+
+`.devcontainer/socket-proxy.yml` runs `wollomatic/socket-proxy` on the host between the
+daemon and the container. It allows requests by HTTP method and path regexp, so the
+handful of endpoints `docker compose exec` needs can be allowed while
+`POST /containers/create` — the endpoint that makes `docker run -v /:/host` an escape —
+stays refused. Two steps:
+
+```bash
+docker compose -f .devcontainer/socket-proxy.yml up -d
+
+devcontainer templates apply \
+  --workspace-folder . \
+  --template-id ghcr.io/pixelated-au/devcontainers/claude-sandbox:latest \
+  --template-args '{"dockerHost":"unix:///var/run/docker-proxy/docker.sock"}'
+```
+
+Note what is *not* in there: `dockerSocket` stays at `/dev/null`. The container never
+holds the real socket at all; it holds a filtered one, and `DOCKER_HOST` points at it.
+
+The two sides meet in a named volume, `claude-sandbox-docker-proxy`, mounted at
+`/var/run/docker-proxy` in the container. That is not the obvious choice — a host
+directory would be — but the proxy chmods the socket it creates, and Docker Desktop's
+virtiofs answers `chmod: invalid argument` for a socket in a bind mount, which kills
+the proxy on start-up with exit code 2. A named volume is a real filesystem inside the
+VM and has no such problem. The socket is created 0660 root:1000, so the group is what
+grants access: the compose file runs the proxy as `0:1000` because `node` is gid 1000
+here. A host whose container user has a different gid needs that changed to match.
+
+Deriving the allowlist is not guesswork and should not be. Run the proxy at
+`-loglevel=debug` with `-allowGET=.*` and friends, run the commands you care about, and
+read the log; the shipped list is what `docker ps`, `docker logs` and
+`docker compose exec` were actually observed to send:
+
+```
+HEAD /_ping                        GET  /v1.x/containers/json
+GET  /v1.x/containers/<id>/json    POST /v1.x/containers/<id>/exec
+POST /v1.x/exec/<id>/start         GET  /v1.x/exec/<id>/json
+```
+
+**What this does and does not buy you.** Container creation, image pulls, and volume and
+network creation are gone, and with them the two-second escape. What remains is exec,
+and exec cannot be scoped by URL regexp to one project — container IDs are opaque — so
+anything with access to this proxy can exec into *any* container on the host, as any
+user, including a privileged one if you run one, and including this sandbox itself. It
+is a large reduction in blast radius, not a boundary you should lean on.
+
+Proxies that filter only by API section, such as `tecnativa/docker-socket-proxy`, do not
+help here: `CONTAINERS=1` with `POST=1` also opens `/containers/create`, which is the
+whole escape.
+
 ## Requirements
 
 - Docker with `NET_ADMIN` and `NET_RAW` available to the container. Rootless Docker
@@ -385,6 +544,15 @@ send bytes; it does nothing about what happens to the code inside it.
   dropped in it is readable in here. It is mounted read-only, so the container
   cannot write to it, but do not use it as a staging area for anything you would
   not hand to the agent.
+- The Docker socket, if you have mounted the real one, is not a hole in the sandbox
+  so much as the absence of one. It is a Unix socket, so no iptables rule applies to
+  it; the daemon behind it is root on the host; and `docker run -v /:/host` reaches
+  your whole filesystem from inside a container that is supposedly fenced in. Treat a
+  container with the socket mounted as having the same authority as your host user.
+- Going through `socket-proxy.yml` instead removes container creation and so that
+  escape, but it still permits `exec` into any container on the host — the allowlist
+  matches on URL, and container IDs carry no project. Exec into something privileged,
+  or into this sandbox, is still reachable from there.
 - `node` may run `configure-firewall.sh` as root via a narrow sudoers rule and
   nothing else. That script is the sandbox's trusted boundary — treat edits to it
   the way you'd treat edits to a sudoers file. It refuses `--file` (and
