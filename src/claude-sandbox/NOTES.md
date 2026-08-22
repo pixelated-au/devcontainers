@@ -501,21 +501,38 @@ container to name, so `/usr/local/bin/host-editor` is installed to forward the c
 to one on your machine: it takes the file, line and column `launch-editor` passes and
 GETs them at `http://host.docker.internal:3334/open`.
 
-Point your tooling at it — `LAUNCH_EDITOR=host-editor` — and run something on the
-host that listens on 3334 and opens the file.
+Point your tooling at it — `LAUNCH_EDITOR=host-editor` — and run the other half,
+`host-editor-bridge.js`, on the host. That is the listener: it takes the request,
+rewrites the path, and shells out to `phpstorm --line <n> <file>`. Swap that line for
+your own editor's CLI if you use something else; it is one `exec` near the bottom.
 
-Two things it needs that it cannot do for itself, and both are silent when missing,
-because the script sends `curl -s` to `/dev/null` and never reports a failure:
+**Give it both roots.** The path arriving from the container is
+`/workspaces/<name>/app/Foo.php`, which does not exist on your machine, so the bridge
+maps one prefix onto the other — and its defaults, which assume the two are the same
+directory one level up from where you run it, are wrong for this template by
+construction. Run it from the project root and say so explicitly:
 
-- **The firewall blocks the host by default.** Add the port to `host_ports` in the
-  whitelist and re-run `firewall-ctl.sh init`. Nothing is opened for you: the
-  template ships `host_ports` empty, because a sandbox should not punch a hole in
-  itself on the assumption you wanted one.
-- **The path it sends is the path in here.** `/workspaces/<name>/app/Foo.php` does
-  not exist on your machine, and the mapping to the real one depends on where you
-  cloned the project — so the listener on 3334 is the place to translate it. Note
-  that the two are not always a simple prefix swap: the `workspaceFolder` option
-  lets the folder name in here differ from the directory name on the host.
+```jsonc
+// package.json
+"scripts": {
+  "editor-bridge": ".devcontainer/host-editor-bridge.js --container-root=/workspaces/<name> --host-root=\"$PWD\""
+}
+```
+
+`$PWD` rather than a hardcoded path so the repo stays portable, and `<name>` is the
+`workspaceFolder` template option — *not* necessarily your directory's name, which is
+the whole reason this cannot be inferred. Get it wrong and the bridge quietly passes
+the container path through unchanged, and your editor is asked to open a file that
+does not exist.
+
+**The firewall blocks the host by default.** Add the port to `host_ports` in the
+whitelist and re-run `firewall-ctl.sh init`. Nothing is opened for you: the template
+ships `host_ports` empty, because a sandbox should not punch a hole in itself on the
+assumption you wanted one.
+
+Both failure modes are silent. The container-side script is `curl -s` redirected to
+`/dev/null`, so it reports neither a blocked port nor a bad path — a click that does
+nothing looks identical either way.
 
 ## Host configuration passed through
 
