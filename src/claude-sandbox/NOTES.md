@@ -289,12 +289,28 @@ to the container immediately — but iptables/ipset only re-read it when told to
 does not kill connections already established to it — pass `--flush-conntrack` if you
 need it cut immediately.
 
-Three shapes of entry are supported in the JSON:
+Four shapes of entry are supported in the JSON:
 
 - `domains` — resolved via DNS at reload time, and pinned in `/etc/hosts` (below).
 - `cidrs` — static ranges, never re-resolved.
 - `github_meta` — pulls current GitHub ranges from `api.github.com/meta`. Set
   `enabled: false` if you don't want the container talking to GitHub at all.
+- `host_ports` — TCP ports on your own machine. Unlike the three above these do not
+  go into the ipset, and the difference matters: the ipset matches on destination
+  address and knows nothing about ports, so allow-listing your host that way opens
+  *everything* listening on it — your app on :80, MySQL on :3306, Mailpit, the lot.
+  Each entry here becomes one iptables rule for that single port instead.
+
+  The address is found by resolving `host.docker.internal`, which on Docker Desktop
+  is not the default gateway: the gateway is 172.17.0.1 while the host answers on
+  192.168.65.254, and only the latter is what a request to the host actually
+  reaches. On plain Linux Docker the name usually does not resolve, the host *is*
+  the default route, and the existing host-network rules already cover it — so the
+  list is skipped with a warning rather than treated as an error.
+
+  One wrinkle worth knowing: `reload` rebuilds the allow-list and deliberately
+  leaves iptables alone, and these are iptables rules. Changing `host_ports` needs
+  `./.devcontainer/firewall-ctl.sh init`.
 
 ### Why domains are pinned in /etc/hosts
 
@@ -476,6 +492,30 @@ defaults write com.apple.screencapture location "$PWD/.clipdrop" && killall Syst
 ⌘⇧4 then writes into the project, and `@.clipdrop/` plus Tab completes the path
 inside Claude. It does not cover an image copied out of a browser, which is what
 `clip-drop.sh` is for.
+
+## Opening files in your editor
+
+Click a stack frame in a Vite error overlay and the tooling runs `launch-editor`,
+which shells out to whatever `$LAUNCH_EDITOR` names. There is no editor in this
+container to name, so `/usr/local/bin/host-editor` is installed to forward the call
+to one on your machine: it takes the file, line and column `launch-editor` passes and
+GETs them at `http://host.docker.internal:3334/open`.
+
+Point your tooling at it — `LAUNCH_EDITOR=host-editor` — and run something on the
+host that listens on 3334 and opens the file.
+
+Two things it needs that it cannot do for itself, and both are silent when missing,
+because the script sends `curl -s` to `/dev/null` and never reports a failure:
+
+- **The firewall blocks the host by default.** Add the port to `host_ports` in the
+  whitelist and re-run `firewall-ctl.sh init`. Nothing is opened for you: the
+  template ships `host_ports` empty, because a sandbox should not punch a hole in
+  itself on the assumption you wanted one.
+- **The path it sends is the path in here.** `/workspaces/<name>/app/Foo.php` does
+  not exist on your machine, and the mapping to the real one depends on where you
+  cloned the project — so the listener on 3334 is the place to translate it. Note
+  that the two are not always a simple prefix swap: the `workspaceFolder` option
+  lets the folder name in here differ from the directory name on the host.
 
 ## Host configuration passed through
 
