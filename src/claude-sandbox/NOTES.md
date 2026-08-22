@@ -289,28 +289,12 @@ to the container immediately — but iptables/ipset only re-read it when told to
 does not kill connections already established to it — pass `--flush-conntrack` if you
 need it cut immediately.
 
-Four shapes of entry are supported in the JSON:
+Three shapes of entry are supported in the JSON:
 
 - `domains` — resolved via DNS at reload time, and pinned in `/etc/hosts` (below).
 - `cidrs` — static ranges, never re-resolved.
 - `github_meta` — pulls current GitHub ranges from `api.github.com/meta`. Set
   `enabled: false` if you don't want the container talking to GitHub at all.
-- `host_ports` — TCP ports on your own machine. Unlike the three above these do not
-  go into the ipset, and the difference matters: the ipset matches on destination
-  address and knows nothing about ports, so allow-listing your host that way opens
-  *everything* listening on it — your app on :80, MySQL on :3306, Mailpit, the lot.
-  Each entry here becomes one iptables rule for that single port instead.
-
-  The address is found by resolving `host.docker.internal`, which on Docker Desktop
-  is not the default gateway: the gateway is 172.17.0.1 while the host answers on
-  192.168.65.254, and only the latter is what a request to the host actually
-  reaches. On plain Linux Docker the name usually does not resolve, the host *is*
-  the default route, and the existing host-network rules already cover it — so the
-  list is skipped with a warning rather than treated as an error.
-
-  One wrinkle worth knowing: `reload` rebuilds the allow-list and deliberately
-  leaves iptables alone, and these are iptables rules. Changing `host_ports` needs
-  `./.devcontainer/firewall-ctl.sh init`.
 
 ### Why domains are pinned in /etc/hosts
 
@@ -492,47 +476,6 @@ defaults write com.apple.screencapture location "$PWD/.clipdrop" && killall Syst
 ⌘⇧4 then writes into the project, and `@.clipdrop/` plus Tab completes the path
 inside Claude. It does not cover an image copied out of a browser, which is what
 `clip-drop.sh` is for.
-
-## Opening files in your editor
-
-Click a stack frame in a Vite error overlay and the tooling runs `launch-editor`,
-which shells out to whatever `$LAUNCH_EDITOR` names. There is no editor in this
-container to name, so `/usr/local/bin/host-editor` is installed to forward the call
-to one on your machine: it takes the file, line and column `launch-editor` passes and
-GETs them at `http://host.docker.internal:3334/open`.
-
-Point your tooling at it — `LAUNCH_EDITOR=host-editor` — and run the other half,
-`host-editor-bridge.js`, on the host. That is the listener: it takes the request,
-rewrites the path, and shells out to `phpstorm --line <n> <file>`. Swap that line for
-your own editor's CLI if you use something else; it is one `exec` near the bottom.
-
-**Give it both roots.** The path arriving from the container is
-`/workspaces/<name>/app/Foo.php`, which does not exist on your machine, so the bridge
-maps one prefix onto the other — and its defaults, which assume the two are the same
-directory one level up from where you run it, are wrong for this template by
-construction. Run it from the project root and say so explicitly:
-
-```jsonc
-// package.json
-"scripts": {
-  "editor-bridge": ".devcontainer/host-editor-bridge.js --container-root=/workspaces/<name> --host-root=\"$PWD\""
-}
-```
-
-`$PWD` rather than a hardcoded path so the repo stays portable, and `<name>` is the
-`workspaceFolder` template option — *not* necessarily your directory's name, which is
-the whole reason this cannot be inferred. Get it wrong and the bridge quietly passes
-the container path through unchanged, and your editor is asked to open a file that
-does not exist.
-
-**The firewall blocks the host by default.** Add the port to `host_ports` in the
-whitelist and re-run `firewall-ctl.sh init`. Nothing is opened for you: the template
-ships `host_ports` empty, because a sandbox should not punch a hole in itself on the
-assumption you wanted one.
-
-Both failure modes are silent. The container-side script is `curl -s` redirected to
-`/dev/null`, so it reports neither a blocked port nor a bad path — a click that does
-nothing looks identical either way.
 
 ## Host configuration passed through
 
