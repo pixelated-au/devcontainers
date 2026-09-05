@@ -7,3 +7,13 @@ node_modules/
 
 # Pre-fetched GitHub ranges, generated per-run by the smoke test
 src/*/.devcontainer/firewall/github-meta-fallback.json
+
+# Host-side tooling for working on this repo: a filtered Docker socket for Claude
+# Code running on the Mac, and the script that grants and revokes access to it.
+# Nothing to do with the templates under src/ — that is what
+# src/claude-sandbox/.devcontainer/socket-proxy.yml is for, and it serves the
+# container rather than the host. Kept out of the repo and published as a gist.
+host-socket-proxy.yml
+socket-proxy-ctl.sh
+socket-proxy.override.yml
+socket-proxy-README.md
