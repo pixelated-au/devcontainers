@@ -235,4 +235,45 @@ check "sudo-allows-list" bash -c '
 check "sudo-allows-status" bash -c '
     sudo -n /usr/local/bin/configure-firewall.sh --status >/dev/null'
 
+# --- host port relay --------------------------------------------------------
+# The relay is a convenience layered on host_ports: it changes the address a
+# permitted port answers on, not what is permitted. So what matters is that it
+# cannot take container start down — postStartCommand is what waitFor waits on,
+# and every one of these is a shape of broken input it could meet there.
+check "relay-script-installed" bash -c '
+    [ -x /usr/local/bin/host-port-relay.sh ]'
+
+check "relay-noop-without-host-ports" bash -c '
+    echo "{\"host_ports\":[]}" > /tmp/relay-none.json
+    FIREWALL_WHITELIST_FILE=/tmp/relay-none.json /usr/local/bin/host-port-relay.sh >/dev/null'
+
+check "relay-survives-missing-whitelist" bash -c '
+    FIREWALL_WHITELIST_FILE=/nonexistent.json /usr/local/bin/host-port-relay.sh >/dev/null'
+
+check "relay-survives-broken-whitelist" bash -c '
+    printf "not json at all" > /tmp/relay-broken.json
+    FIREWALL_WHITELIST_FILE=/tmp/relay-broken.json /usr/local/bin/host-port-relay.sh >/dev/null'
+
+check "relay-survives-nonsense-port" bash -c '
+    echo "{\"host_ports\":[\"not-a-port\"]}" > /tmp/relay-bad.json
+    out=$(FIREWALL_WHITELIST_FILE=/tmp/relay-bad.json /usr/local/bin/host-port-relay.sh 2>&1)
+    echo "$out" | grep -q "invalid port"'
+
+# Below 1024 needs root to bind, and the sudoers rule covers configure-firewall.sh
+# alone. Skipped with a reason rather than failed: the firewall rule for that port
+# is still installed, so the port is reachable, just not via loopback.
+check "relay-skips-privileged-ports" bash -c '
+    echo "{\"host_ports\":[80]}" > /tmp/relay-priv.json
+    out=$(FIREWALL_WHITELIST_FILE=/tmp/relay-priv.json /usr/local/bin/host-port-relay.sh 2>&1)
+    echo "$out" | grep -q "privileged"'
+
+# A relay must never evict something the container is already running.
+check "relay-leaves-existing-listener-alone" bash -c '
+    socat TCP-LISTEN:19222,fork,reuseaddr,bind=127.0.0.1 /dev/null >/dev/null 2>&1 &
+    sleep 0.5
+    echo "{\"host_ports\":[19222]}" > /tmp/relay-taken.json
+    out=$(FIREWALL_WHITELIST_FILE=/tmp/relay-taken.json /usr/local/bin/host-port-relay.sh 2>&1)
+    kill %1 2>/dev/null
+    echo "$out" | grep -q "already has a listener"'
+
 reportResults

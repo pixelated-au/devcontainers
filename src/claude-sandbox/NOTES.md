@@ -289,12 +289,90 @@ to the container immediately — but iptables/ipset only re-read it when told to
 does not kill connections already established to it — pass `--flush-conntrack` if you
 need it cut immediately.
 
-Three shapes of entry are supported in the JSON:
+Four shapes of entry are supported in the JSON:
 
 - `domains` — resolved via DNS at reload time, and pinned in `/etc/hosts` (below).
 - `cidrs` — static ranges, never re-resolved.
 - `github_meta` — pulls current GitHub ranges from `api.github.com/meta`. Set
   `enabled: false` if you don't want the container talking to GitHub at all.
+- `host_ports` — TCP ports on your own machine, as iptables rules rather than
+  allow-list entries (below). Empty by default.
+
+### Reaching a port on the host
+
+The first three are about the internet; `host_ports` is about your own machine. A dev
+server, a database, Chrome's remote debugging port — anything bound to `127.0.0.1` on
+the host is invisible from in here, and the allow-list cannot express it, because the
+ipset matches on address alone. An entry in `cidrs` for the host would open *every*
+port it has listening on loopback, which on a workstation is a great many, none of
+them expecting a caller from outside the machine.
+
+`host_ports` installs one rule per port instead, pinned to the host's address and to
+TCP. So `"host_ports": [9222]` becomes:
+
+```
+-A OUTPUT -d 192.168.65.254/32 -p tcp -m tcp --dport 9222 -j ACCEPT
+```
+
+Two things to know about it:
+
+- **It needs `init`, not `reload`.** These are iptables rules, and `--reload` only
+  rebuilds the ipset — adding a port and reloading looks like it worked while
+  changing nothing. `--reload` warns when it finds a configured port with no rule,
+  but `./.devcontainer/firewall-ctl.sh init` is the command you want.
+- **The address is worked out at init time, not written down.** On Docker Desktop it
+  is whatever `host.docker.internal` resolves to — `192.168.65.254`, the address the
+  VM forwards to the host's loopback. On plain Linux Docker that name does not exist
+  unless the container was started with `--add-host=host.docker.internal:host-gateway`,
+  and the bridge gateway is used instead, which is the same address the name would
+  have given. Nothing machine-specific ends up in the JSON either way.
+
+#### Chrome remote debugging, which is the awkward one
+
+Start Chrome on the host with `--remote-debugging-port=9222`, put `9222` in
+`host_ports`, and run `firewall-ctl.sh init`. The packets now arrive — but:
+
+```console
+$ curl http://host.docker.internal:9222/json/version
+Host header is specified and is not an IP address or localhost.
+```
+
+Chrome serves the DevTools endpoint only when the `Host` header is an IP literal or
+`localhost`, and the name fails that test. Connecting to `http://192.168.65.254:9222`
+directly does work, at the cost of putting an address that is a fact about your Docker
+install into whatever config points at it.
+
+Relaying the port onto loopback avoids both problems, and the container does it for
+you: `host-port-relay.sh` runs from `postStartCommand` once the firewall is up, and
+puts every port in `host_ports` on the container's own loopback.
+
+```console
+[relay] localhost:9222 -> host.docker.internal:9222
+```
+
+The `Host` header is then `localhost:9222`, which Chrome accepts, and
+`webSocketDebuggerUrl` comes back as `ws://localhost:9222/...` pointing at the same
+relay. Puppeteer, Playwright's `connectOverCDP` and `chrome-remote-interface` all
+default to `http://localhost:9222`, so they need no configuration at all.
+
+Three things the relay will not do:
+
+- **Bind a privileged port.** Below 1024 needs root, and the sudoers rule covers
+  `configure-firewall.sh` alone. Such a port is still allowed by the firewall — dial
+  it at `host.docker.internal:<port>` and deal with the Host header yourself.
+- **Evict an existing listener.** If something in the container already holds the
+  port, the relay says so and leaves it alone. The converse is worth knowing too:
+  while a relay holds a port, nothing else in here can bind it.
+- **Fail container start.** `waitFor` waits on `postStartCommand`, so the script logs
+  whatever it runs into — unresolvable host, missing socat, malformed whitelist — and
+  exits 0 regardless. The firewall is the boundary; this is only addressing.
+
+Understand what this hands over before turning it on. A remote debugging port is full
+control of the browser it belongs to: every cookie and logged-in session, the contents
+of every open tab, and the ability to navigate anywhere as you. That is closer to the
+Docker socket in kind than to a hole in the allow-list, and the same reasoning applies
+— point it at a profile you would not mind an agent driving (`--user-data-dir`) rather
+than at your everyday one.
 
 ### Why domains are pinned in /etc/hosts
 
@@ -354,7 +432,7 @@ to an attacker than anything else in there.
 
 ## Keeping projects apart
 
-Claude's own config — including your login — lives in one named volume shared by
+Claude's own config — including your login — lives in one directory shared by
 every container built from this template. That is deliberate for credentials, but
 it also means Claude's session history is shared, and Claude keys that history by
 the path it is run from. If every project mounted at the same `/workspace`, they
@@ -493,38 +571,64 @@ substitution inside another's default, which is why this is a sub-path rather th
 full path.) `initializeCommand` creates the directories if they don't exist, so an
 unset or unused config dir won't break container start.
 
-Claude's own config — including your login — lives in the named volume
-`claude-code-devcontainer-config`, shared by every container built from this
-template. You authenticate once, not once per project. Delete the volume to log out
-everywhere:
+### The sandbox's own settings
 
-```bash
-docker volume rm claude-code-devcontainer-config
-```
+Claude's own config — including your login — lives on the host, in a directory
+shared by every container built from this template:
 
-`~/.config` is persisted the same way, in `claude-code-devcontainer-user-config`.
-That is where everything following the XDG convention writes — `gh`'s login, git
-credential caches, tool state — none of which survives a rebuild otherwise, so
+| Host path | Container path |
+| --- | --- |
+| `~/.claude-devcontainer/claude` | `/home/node/.claude` |
+| `~/.claude-devcontainer/config` | `/home/node/.config` |
+
+You authenticate once, not once per project, and because these are ordinary
+directories rather than named volumes you can open them in an editor, back them up,
+or diff them without going through `docker run`. Set `CLAUDE_DEVCONTAINER_DIR` to
+move the root, on the same relative-to-`$HOME` convention as `CLAUDE_HOST_CONFIG_DIR`
+above.
+
+`~/.config` is where everything following the XDG convention writes — `gh`'s login,
+git credential caches, tool state — none of which survives a rebuild otherwise, so
 `gh auth login` would be a chore you repeat every time the image changes.
 
-It is one volume shared by every container from this template, not one per project.
-Convenient, and worth being deliberate about: a `gh` token in there is readable by
-*any* container built from this template, and the firewall already allows GitHub, so
-anything Claude does in one project can push to every repo that token can reach. If
-that is more trust than you want to extend, give the project its own copy by editing
-the mount to include `${devcontainerId}`:
+Note what this is **not**: it is not your host `~/.claude`. The sandbox keeps its own
+settings, its own login and its own session history, and the only thing it takes from
+your personal config is the read-only `commands`/`agents` pair above. Log the sandbox
+out everywhere by deleting the directory:
+
+```bash
+rm -rf ~/.claude-devcontainer/claude
+```
+
+One carve-out: `plugins` stays in a named volume,
+`claude-code-devcontainer-plugins`, mounted inside the bind. Nothing in there is
+worth hand-editing, and it is both large and read in full at every start. Docker
+Desktop's virtiofs runs about an order of magnitude slower than a volume for many
+small files — 931ms against 60ms to write 3000 of them, measured on one Mac — and
+that is exactly the shape of the plugin tree. Keeping it off the bind is worth more
+than being able to browse it.
+
+It is one directory shared by every container from this template, not one per
+project. Convenient, and worth being deliberate about: a `gh` token in there is
+readable by *any* container built from this template, and the firewall already allows
+GitHub, so anything Claude does in one project can push to every repo that token can
+reach. If that is more trust than you want to extend, give the project its own copy
+by pointing the mount at a per-project volume instead:
 
 ```jsonc
 "source=claude-code-devcontainer-user-config-${devcontainerId},target=/home/node/.config,type=volume",
 ```
 
-The volume is seeded from the image the first time it is created and never again, so
-a later image version that ships new defaults under `~/.config` will not reach a
-volume you already have. Delete it to start clean:
+### Ownership, on Linux hosts
 
-```bash
-docker volume rm claude-code-devcontainer-user-config
-```
+A named volume mounted over a directory that exists in the image inherits that
+directory's ownership, which is how `~/.claude` and `~/.config` used to come up
+owned by `node`. A bind mount carries the host's ownership instead.
+
+On Docker Desktop this is moot — virtiofs presents host files as the container user,
+so `node` can write regardless of your macOS uid. On plain Linux Docker the host uid
+shows through unchanged, so if yours is not 1000 the sandbox cannot write to its own
+config. `sudo chown -R 1000:1000 ~/.claude-devcontainer` on the host is the fix.
 
 ## What this does not protect against
 

@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   iptables \
   ipset \
   iproute2 \
+  socat \
   conntrack \
   dnsutils \
   aggregate \
@@ -70,10 +71,16 @@ ENV DEVCONTAINER=true
 # into a per-project subfolder named at template-apply time, so the image cannot
 # know the leaf name.
 #
-# .config must exist and be owned by node before the named volume is mounted over
-# it. Docker creates a missing mountpoint as root:root, and the volume it seeds
-# from an absent directory is empty — so without this, ~/.config comes up
+# .claude and .config must exist and be owned by node before anything is mounted
+# over them: Docker creates a missing mountpoint as root:root, leaving it
 # unwritable by the only user that ever runs anything here.
+#
+# Both are host binds now rather than named volumes, which changes where ownership
+# comes from. A volume mounted over an existing directory inherits that directory's
+# ownership; a bind carries the host's. On Docker Desktop that is remapped to the
+# container user and this is moot, but on plain Linux Docker the host uid shows
+# through — if yours is not 1000, `node` cannot write to its own config, and the
+# mkdir below will not save you. See the host-settings section of README.md.
 RUN mkdir -p /workspaces /home/node/.claude /home/node/.config && \
   chown -R node:node /workspaces /home/node/.claude /home/node/.config
 
@@ -127,9 +134,10 @@ RUN curl -fsSL https://bun.com/install | bash
 # root and nothing else, so a compromised agent can't sudo its way out.
 USER root
 COPY configure-firewall.sh /usr/local/bin/
+COPY host-port-relay.sh /usr/local/bin/
 COPY firewall/firewall-whitelist-domains.json /etc/firewall/
 COPY firewall-warning.sh /etc/firewall-warning.sh
-RUN chmod +x /usr/local/bin/configure-firewall.sh && \
+RUN chmod +x /usr/local/bin/configure-firewall.sh /usr/local/bin/host-port-relay.sh && \
     chmod 644 /etc/firewall/firewall-whitelist-domains.json /etc/firewall-warning.sh && \
     echo "node ALL=(root) NOPASSWD: /usr/local/bin/configure-firewall.sh" > /etc/sudoers.d/node-firewall && \
     chmod 0440 /etc/sudoers.d/node-firewall

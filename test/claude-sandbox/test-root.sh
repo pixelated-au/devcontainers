@@ -80,6 +80,58 @@ check "no-warning-when-healthy" bash -c '
 check "healthy-status-code" bash -c '
     /usr/local/bin/configure-firewall.sh --status >/dev/null 2>&1'
 
+# --- host_ports -------------------------------------------------------------
+# Opening a port on the host is opt-in, and deliberately narrow: one rule per
+# port pinned to the host's address, rather than an entry in `cidrs`. The ipset
+# is address-only, so allow-listing the gateway there would open every port the
+# host has listening on loopback.
+#
+# Run from a healthy firewall built off the container's own whitelist, so the
+# "absent by default" check below means what it says.
+HOST_PORTS_WHITELIST=/tmp/host-ports-whitelist.json
+jq '.host_ports = [9222]' /etc/firewall/firewall-whitelist-domains.json \
+    > "$HOST_PORTS_WHITELIST"
+
+check "host-ports-absent-by-default" bash -c '
+    ! iptables -S OUTPUT | grep -q -- "--dport 9222 -j ACCEPT"'
+
+check "host-ports-init-succeeds" bash -c "
+    /usr/local/bin/configure-firewall.sh --init --file '$HOST_PORTS_WHITELIST' \
+        >/dev/null 2>&1"
+
+# The address differs by runtime — host.docker.internal on Docker Desktop, the
+# bridge gateway on plain Linux Docker — so match the shape, not the value. What
+# matters is that it is a single /32, tcp, and one port.
+check "host-ports-rule-is-scoped" bash -c '
+    iptables -S OUTPUT \
+        | grep -qE -- "^-A OUTPUT -d [0-9.]+/32 -p tcp -m tcp --dport 9222 -j ACCEPT$"'
+
+check "host-ports-open-nothing-else" bash -c '
+    [ "$(iptables -S OUTPUT | grep -c -- "--dport 9222 -j ACCEPT")" = 1 ] \
+        && ! iptables -S OUTPUT | grep -q -- "--dport 9223 -j ACCEPT"'
+
+# host_ports are iptables rules and --reload only rebuilds the ipset, so a port
+# added after init is silently not installed. The warning is the only signal.
+check "host-ports-reload-warns-when-not-installed" bash -c "
+    jq '.host_ports = [9223]' '$HOST_PORTS_WHITELIST' > /tmp/host-ports-9223.json
+    out=\$(/usr/local/bin/configure-firewall.sh --reload --file /tmp/host-ports-9223.json 2>&1) || true
+    echo \"\$out\" | grep -q -- '--init'"
+
+# A bad port is a bad allow-list, and the allow-list is the whole boundary: fail
+# and seal rather than install part of it.
+check "host-ports-rejects-invalid-port" bash -c "
+    jq '.host_ports = [70000]' '$HOST_PORTS_WHITELIST' > /tmp/host-ports-bad.json
+    ! /usr/local/bin/configure-firewall.sh --init --file /tmp/host-ports-bad.json \
+        >/dev/null 2>&1"
+check "host-ports-invalid-port-seals" bash -c '
+    ! curl -sS --connect-timeout 5 --max-time 10 https://example.com >/dev/null 2>&1'
+
+# Back to the container's own whitelist for everything that follows.
+check "host-ports-restore" bash -c '
+    /usr/local/bin/configure-firewall.sh --init >/dev/null 2>&1'
+check "host-ports-gone-after-restore" bash -c '
+    ! iptables -S OUTPUT | grep -q -- "--dport 9222 -j ACCEPT"'
+
 # --- IPv6 -------------------------------------------------------------------
 # Every rule this script installs is an iptables rule, and the allow-list only
 # ever contains IPv4 — add_github_ranges drops GitHub's IPv6 ranges outright. So
