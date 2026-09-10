@@ -15,7 +15,9 @@ project root:
 
 ```bash
 npm install -g @devcontainers/cli    # once
+```
 
+```bash
 devcontainer templates apply \
   --workspace-folder . \
   --template-id ghcr.io/pixelated-au/devcontainers/claude-sandbox:latest \
